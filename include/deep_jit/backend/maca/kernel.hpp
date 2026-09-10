@@ -53,11 +53,10 @@ public:
     // and friends do not exist), so the entry point name is recovered from
     // the device artifact itself with the toolchain's `llvm-nm` -- the same
     // route the host project's kernel JIT takes.  Filtering mirrors that
-    // implementation: only the kernel namespace symbols are entry points,
-    // and the toolchain's own bookkeeping symbols are skipped.
-    static std::vector<std::string> parse_kernel_names(const std::filesystem::path& path) {
-        const std::filesystem::path llvm_nm =
-            std::filesystem::path(get_env<std::string>("MACA_PATH", "/opt/maca")) / "mxgpu_llvm/bin/llvm-nm";
+    // implementation: the toolchain's own bookkeeping symbols and compiler
+    // runtime stubs are skipped, leaving the user's `extern "C"` entry point.
+    static std::vector<std::string> parse_kernel_names(const std::filesystem::path& llvm_nm,
+                                                       const std::filesystem::path& path) {
         const auto output = call_external_command(
             llvm_nm.string() + " --defined-only " + path.string());
 
@@ -106,12 +105,14 @@ public:
         return kernel_names;
     }
 
-    static std::shared_ptr<Kernel> load(const std::filesystem::path& dir, const Env& env) {
+    static std::shared_ptr<Kernel> load(const std::filesystem::path& dir,
+                                        const Env& env,
+                                        const std::filesystem::path& llvm_nm) {
         // Release GIL to let other Python threads run
         GilScopedRelease gil_release;
 
         // Check existence
-        const auto binary_path = dir / "kernel.mcfb";
+        const auto binary_path = dir / "kernel.devbin";
         if (not std::filesystem::is_regular_file(binary_path))
             DJ_PANIC("missing MACA device binary: {}", binary_path.string());
 
@@ -123,7 +124,7 @@ public:
         const auto start_time = std::chrono::steady_clock::now();
 
         // Load kernel
-        const auto kernel_names = parse_kernel_names(binary_path);
+        const auto kernel_names = parse_kernel_names(llvm_nm, binary_path);
         if (kernel_names.size() != 1)
             DJ_PANIC("expected exactly one kernel in {}, found {}: {}",
                      binary_path.string(), kernel_names.size(), str::join(kernel_names));

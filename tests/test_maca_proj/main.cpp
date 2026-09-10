@@ -17,7 +17,6 @@
 
 #include <deep_jit/backend/maca/backend.hpp>
 #include <deep_jit/cache/memory.hpp>
-#include <deep_jit/python_api.hpp>
 #include <deep_jit/utils/command.hpp>
 #include <deep_jit/utils/env.hpp>
 #include <deep_jit/utils/exception.hpp>
@@ -140,13 +139,22 @@ void test_toolkit_discovery(const fs::path& cache_root) {
     // The library-prefixed override must win over the inherited default.
     const auto fake_dir = cache_root / "fake_toolkit";
     deep_jit::make_dirs(fake_dir);
+    const auto make_executable = [](const fs::path& path, const std::string& content) {
+        deep_jit::write_file_sync(path, content);
+        fs::permissions(path, fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
+                        fs::perm_options::add);
+    };
     const auto fake_mxcc = fake_dir / "mxcc";
-    deep_jit::write_file_sync(fake_mxcc, "#!/bin/sh\necho 'mxcc version 1.0.0 (test)'\n");
-    fs::permissions(fake_mxcc, fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
-                    fs::perm_options::add);
+    make_executable(fake_mxcc, "#!/bin/sh\necho 'mxcc version 1.0.0 (test)'\n");
+    // `llvm-nm` is resolved next to mxcc; the fixture must provide both so the
+    // discovery exercises the override rather than the executable check.
+    make_executable(fake_dir / "llvm-nm", "#!/bin/sh\nexit 0\n");
     set_env("TOOLKIT_DISCOVERY_JIT_MXCC_COMPILER", fake_mxcc.string());
-    DJ_HOST_ASSERT(deep_jit::MACA::find_maca_toolkit(env).mxcc == fs::absolute(fake_mxcc).lexically_normal(),
+    const auto overridden = deep_jit::MACA::find_maca_toolkit(env);
+    DJ_HOST_ASSERT(overridden.mxcc == fs::absolute(fake_mxcc).lexically_normal(),
                    "library mxcc override was not selected");
+    DJ_HOST_ASSERT(overridden.llvm_nm == fs::absolute(fake_dir / "llvm-nm").lexically_normal(),
+                   "llvm-nm was not resolved next to the overridden mxcc");
     unset_env("TOOLKIT_DISCOVERY_JIT_MXCC_COMPILER");
 
     set_env("INVALID_TOOLKIT_JIT_MXCC_COMPILER", (fake_dir / "missing_mxcc").string());
@@ -293,8 +301,8 @@ void test_cache_artifacts(Runtime& runtime, const fs::path& cache_root) {
     const auto source = get_source("scalar_increment.cu");
     const auto artifact = runtime.compile_without_load("cache_artifacts", source);
     DJ_HOST_ASSERT(fs::is_regular_file(artifact / "kernel.cu"), "missing kernel source: {}", artifact.string());
-    DJ_HOST_ASSERT(fs::is_regular_file(artifact / "kernel.mcfb"), "missing device binary: {}", artifact.string());
-    DJ_HOST_ASSERT(fs::file_size(artifact / "kernel.mcfb") > 0, "empty device binary");
+    DJ_HOST_ASSERT(fs::is_regular_file(artifact / "kernel.devbin"), "missing device binary: {}", artifact.string());
+    DJ_HOST_ASSERT(fs::file_size(artifact / "kernel.devbin") > 0, "empty device binary");
     DJ_HOST_ASSERT(fs::is_regular_file(artifact / "meta.json"), "missing metadata");
     DJ_HOST_ASSERT(deep_jit::read(artifact / "kernel.cu") == source, "cached source mismatch");
 
