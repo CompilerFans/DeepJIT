@@ -333,16 +333,87 @@ void test_launch_option_validation(Runtime& runtime) {
     expect_failure([&] { runtime.launch(kernel, {.grid_dim = dim3(1, 1, 1)}, nullptr, 0); },
                    "block dimension must be specified");
 
-    // Unsupported attribute axes are validated rather than silently ignored.
-    expect_failure(
-        [&] {
-            auto options = runtime.default_launch_options;
-            options.grid_dim = dim3(1, 1, 1);
-            options.block_dim = dim3(1, 1, 1);
-            options.cooperative = true;
-            kernel->launch(options, nullptr, 0);
-        },
-        "cooperative launch is not supported");
+    // Cluster launch and PDL are the axes MACA genuinely does not implement:
+    // any attribute other than the cooperative flag makes
+    // `mcModuleLaunchKernelEx` fail with mcErrorInvalidConfiguration ("Only
+    // Cooperative features are supported, others are not").  They are
+    // rejected up front with a clear message rather than surfacing as an
+    // opaque driver error code.
+    const auto launch_with = [&](const LaunchOptions& overrides) {
+        auto options = runtime.default_launch_options;
+        options.grid_dim = dim3(1, 1, 1);
+        options.block_dim = dim3(1, 1, 1);
+        if (overrides.cluster_dim)
+            options.cluster_dim = overrides.cluster_dim;
+        if (overrides.enable_pdl)
+            options.enable_pdl = overrides.enable_pdl;
+        kernel->launch(options, nullptr, 0);
+    };
+    expect_failure([&] { launch_with(LaunchOptions {.cluster_dim = dim3(2, 1, 1)}); },
+                   "does not support cluster launch");
+    expect_failure([&] { launch_with(LaunchOptions {.enable_pdl = true}); },
+                   "does not support programmatic dependent launch");
+    // The rejection is unconditional: no environment flag may re-enable a
+    // path the runtime refuses anyway.
+    set_env("DJ_MACA_ALLOW_UNSUPPORTED_LAUNCH_ATTRS", "1");
+    expect_failure([&] { launch_with(LaunchOptions {.cluster_dim = dim3(2, 1, 1)}); },
+                   "does not support cluster launch");
+    unset_env("DJ_MACA_ALLOW_UNSUPPORTED_LAUNCH_ATTRS");
+
+    // Dynamic shared memory and the cooperative flag *are* supported and must
+    // still reach the driver successfully.
+    int* output = nullptr;
+    DJ_MACA_RUNTIME_CHECK(mcMalloc(reinterpret_cast<void**>(&output), sizeof(int)));
+    auto options = runtime.default_launch_options;
+    options.grid_dim = dim3(1, 1, 1);
+    options.block_dim = dim3(1, 1, 1);
+    options.num_smem_bytes = 1024;
+    options.cooperative = true;
+    kernel->launch(options, output, 7);
+    DJ_MACA_RUNTIME_CHECK(mcDeviceSynchronize());
+    int result = 0;
+    DJ_MACA_RUNTIME_CHECK(mcMemcpy(&result, output, sizeof(int), mcMemcpyDeviceToHost));
+    DJ_MACA_RUNTIME_CHECK(mcFree(output));
+    DJ_HOST_ASSERT(result == 8, "cooperative launch produced the wrong value: {}", result);
+}
+
+void test_large_dynamic_shared_memory(Runtime& runtime) {
+    // A kernel whose dynamic shared-memory request exceeds the default
+    // per-block limit must launch on the `mcLaunchConfigExtension::
+    // sharedMemBytes` field alone -- no function-attribute call is needed on
+    // MACA (the launch enforces the `sharedMemPerBlockOptin` ceiling itself).
+    // 64 KiB is the device maximum, so this is the strongest form of the
+    // proof: if the field were ignored, or if a ceiling attribute were
+    // required, this launch would be refused.
+    const auto source = get_source("large_dynamic_shared_memory.cu");
+    const auto kernel = runtime.compile("large_smem", source);
+    const int device_max = runtime.device.get_num_smem_bytes();
+    DJ_HOST_ASSERT(device_max > 0, "device reported no opt-in shared memory");
+    std::printf("           sharedMemPerBlockOptin: %d, requesting: %d\n", device_max, device_max);
+
+    auto options = runtime.default_launch_options;
+    options.grid_dim = dim3(1, 1, 1);
+    options.block_dim = dim3(32, 1, 1);
+    options.num_smem_bytes = device_max;
+
+    int* output = nullptr;
+    DJ_MACA_RUNTIME_CHECK(mcMalloc(reinterpret_cast<void**>(&output), sizeof(int)));
+    kernel->launch(options, output, 41);
+    DJ_MACA_RUNTIME_CHECK(mcDeviceSynchronize());
+    int result = 0;
+    DJ_MACA_RUNTIME_CHECK(mcMemcpy(&result, output, sizeof(int), mcMemcpyDeviceToHost));
+    DJ_MACA_RUNTIME_CHECK(mcFree(output));
+    DJ_HOST_ASSERT(result == 42, "large shared-memory launch produced the wrong value: {}", result);
+
+    // One byte over the ceiling must be refused by the launch itself.
+    options.num_smem_bytes = device_max + 1;
+    bool refused = false;
+    try {
+        kernel->launch(options, nullptr, 0);
+    } catch (const std::exception&) {
+        refused = true;
+    }
+    DJ_HOST_ASSERT(refused, "a request above sharedMemPerBlockOptin was not refused");
 }
 
 void test_launch_options_override(Runtime& runtime) {
@@ -390,6 +461,7 @@ int main() {
     run_test("cache_artifacts", [&] { test_cache_artifacts(*runtime, cache_root); });
     run_test("dump_asm", [&] { test_dump_asm(*runtime); });
     run_test("launch_option_validation", [&] { test_launch_option_validation(*runtime); });
+    run_test("large_dynamic_shared_memory", [&] { test_large_dynamic_shared_memory(*runtime); });
     run_test("multiple_devices", [&] { return test_multiple_devices(); });
 
     std::printf("\nAll MACA DeepJIT tests passed.\n");

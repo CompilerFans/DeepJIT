@@ -49,10 +49,13 @@ public:
     Kernel(Kernel&&) = delete;
     Kernel& operator=(Kernel&&) = delete;
 
-    // MACA has no driver-side kernel enumeration (`cuLibraryGetKernelCount`
-    // and friends do not exist), so the entry point name is recovered from
-    // the device artifact itself with the toolchain's `llvm-nm` -- the same
-    // route the host project's kernel JIT takes.  Filtering mirrors that
+    // MACA has no driver-side kernel *enumeration*: `mcLibraryGetKernelCount`,
+    // `mcLibraryEnumerateKernels`, `mcLibraryLoadFromFile`,
+    // `mcKernelGetFunction`, `mcModuleGetFunctionCount` and
+    // `mcModuleEnumerateFunctions` are all absent from libmcruntime.so
+    // (verified with `nm -D`), so the entry point name is recovered from the
+    // device artifact itself with the toolchain's `llvm-nm` -- the same route
+    // the host project's kernel JIT takes.  Filtering mirrors that
     // implementation: the toolchain's own bookkeeping symbols and compiler
     // runtime stubs are skipped, leaving the user's `extern "C"` entry point.
     static std::vector<std::string> parse_kernel_names(const std::filesystem::path& llvm_nm,
@@ -172,45 +175,63 @@ public:
         DJ_HOST_ASSERT(launch_options.cluster_dim->y == 1 and launch_options.cluster_dim->z == 1,
                        "only one-dimensional MACA clusters are supported");
 
-        // Limit the checks MACA does not support to the portable subset.
-        // `mcFuncSetAttribute` exists but MACA's attribute set is closed
-        // (mcFuncAttributeMaxDynamicSharedMemorySize / carveout only), so
-        // raising the dynamic shared-memory ceiling is the sole attribute
-        // this backend can set.
-        if (*launch_options.num_smem_bytes > 0) {
-            DJ_MACA_DRIVER_CHECK(driver::lazy_mcFuncSetAttribute(
-                kernel_handle, mcFuncAttributeMaxDynamicSharedMemorySize,
-                *launch_options.num_smem_bytes));
-        }
+        // NOTE: unlike CUDA, MACA needs no `cuFuncSetAttribute` call to raise
+        // the dynamic shared-memory ceiling -- measured on C500, a launch of
+        // up to `sharedMemPerBlockOptin` (64 KiB) succeeds with the attribute
+        // never set, and anything above it is refused at launch with
+        // mcErrorInvalidValue ("Shared memory size error ... in device
+        // 65536").  The ceiling is enforced by the launch itself, so the
+        // maximum-dynamic-shared-memory attribute is deliberately not set:
+        // the runtime entry that accepts a `mcFunction_t` is not in
+        // libmcruntime.so (the `cuFuncSetAttribute` spelling lives in
+        // libsymbol_cu.so, which this backend does not link), and the native
+        // `mcFuncSetAttribute` rejects a function handle outright.  Adding
+        // the call would buy nothing but a new link dependency.
 
-        // NOTES: MACA's `mcModuleLaunchKernel` takes no attribute list, and
-        // the attribute-carrying entry point (`mcLaunchKernelExC`) is not an
-        // exported symbol.  The cooperative / cluster / PDL dimensions that
-        // the CUDA backend expressed as launch attributes therefore have to
-        // be either handled by the runtime's own defaults or dropped; the
-        // option axes are kept so a consumer's option plumbing stays
-        // source-compatible, and the values are validated here rather than
-        // silently ignored.
-        DJ_HOST_ASSERT(not *launch_options.cooperative or
-                       std::getenv("DJ_MACA_ALLOW_UNSUPPORTED_LAUNCH_ATTRS") != nullptr,
-                       "MACA cooperative launch is not supported by mcModuleLaunchKernel");
-        DJ_HOST_ASSERT(launch_options.cluster_dim->x == 1 or
-                       std::getenv("DJ_MACA_ALLOW_UNSUPPORTED_LAUNCH_ATTRS") != nullptr,
-                       "MACA cluster launch is not supported by mcModuleLaunchKernel");
-        DJ_HOST_ASSERT(not *launch_options.enable_pdl or
-                       std::getenv("DJ_MACA_ALLOW_UNSUPPORTED_LAUNCH_ATTRS") != nullptr,
-                       "MACA PDL is not supported by mcModuleLaunchKernel");
+        // Build the launch attributes.  MACA accepts a *limited* attribute
+        // set: only the cooperative flag is honoured, and everything else is
+        // refused unconditionally -- measured on C500, the runtime reports
+        // "Only Cooperative features are supported, others are not" and
+        // returns mcErrorInvalidConfiguration for any other attribute,
+        // including a trivial 1x1x1 cluster.  Cluster launch and PDL are
+        // therefore rejected up front with a clear message rather than being
+        // handed to the driver to fail with an opaque code.  This is a MACA
+        // implementation limit, not a configuration that a flag can enable,
+        // so the rejection is unconditional (no escape hatch: the only
+        // outcome of bypassing it would be the same failure one layer down).
+        // `nonportable_cluster_size_allowed` has no MACA counterpart at all
+        // (neither a launch attribute nor a function attribute).
+        DJ_HOST_ASSERT(launch_options.cluster_dim->x == 1,
+                       "MACA does not support cluster launch (mcErrorInvalidConfiguration)");
+        DJ_HOST_ASSERT(not *launch_options.enable_pdl,
+                       "MACA does not support programmatic dependent launch (mcErrorInvalidConfiguration)");
+
+        // NOTES: please enlarge the array size if you want more attributes
+        std::array<mcLaunchAttribute, 1> attributes{};
+        unsigned int num_attributes = 0;
+        if (*launch_options.cooperative) {
+            auto& attribute = attributes[num_attributes ++];
+            attribute.id = mcLaunchAttributeCooperative;
+            attribute.val.cooperative = 1;
+        }
 
         // Set launch config
         void* kernel_arg_ptrs[sizeof...(Args) + 1] = {kernel_arg_pointer(args)..., nullptr};
-        const auto stream = launch_options.stream
+        mcLaunchConfigExtension config{};
+        config.gridDimX = launch_options.grid_dim->x;
+        config.gridDimY = launch_options.grid_dim->y;
+        config.gridDimZ = launch_options.grid_dim->z;
+        config.blockDimX = launch_options.block_dim->x;
+        config.blockDimY = launch_options.block_dim->y;
+        config.blockDimZ = launch_options.block_dim->z;
+        config.sharedMemBytes = static_cast<unsigned int>(*launch_options.num_smem_bytes);
+        config.hStream = launch_options.stream
             ? *launch_options.stream
             : static_cast<mcStream_t>(at::cuda::getCurrentCUDAStream().stream());
-        DJ_MACA_DRIVER_CHECK(driver::lazy_mcModuleLaunchKernel(
-            kernel_handle,
-            launch_options.grid_dim->x, launch_options.grid_dim->y, launch_options.grid_dim->z,
-            launch_options.block_dim->x, launch_options.block_dim->y, launch_options.block_dim->z,
-            static_cast<unsigned int>(*launch_options.num_smem_bytes), stream,
+        config.attrs = num_attributes == 0 ? nullptr : attributes.data();
+        config.numAttrs = num_attributes;
+        DJ_MACA_DRIVER_CHECK(driver::lazy_mcModuleLaunchKernelEx(
+            &config, kernel_handle,
             sizeof...(Args) == 0 ? nullptr : kernel_arg_ptrs, nullptr));
     }
 

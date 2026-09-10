@@ -17,21 +17,37 @@ DJ_DECL_LAZY_DL_HANDLE(get_maca_handle, "libmcruntime.so");
 
 DJ_DECL_LAZY_DL_FUNCTION(get_maca_handle, mcGetErrorName);
 DJ_DECL_LAZY_DL_FUNCTION(get_maca_handle, mcGetErrorString);
-DJ_DECL_LAZY_DL_FUNCTION(get_maca_handle, mcFuncSetAttribute);
 DJ_DECL_LAZY_DL_FUNCTION(get_maca_handle, mcModuleLoad);
 DJ_DECL_LAZY_DL_FUNCTION(get_maca_handle, mcModuleUnload);
 DJ_DECL_LAZY_DL_FUNCTION(get_maca_handle, mcModuleGetFunction);
-DJ_DECL_LAZY_DL_FUNCTION(get_maca_handle, mcModuleLaunchKernel);
+DJ_DECL_LAZY_DL_FUNCTION(get_maca_handle, mcModuleLaunchKernelEx);
 
-// NOTE: MACA has no `mcLibrary*` and no module-level function enumeration
-// (`mcModuleGetFunctionCount` / `mcModuleEnumerateFunctions` do not exist),
-// so the loaded artifact must report exactly one kernel and its name is
-// discovered out-of-band by `llvm-nm` on the device artifact -- see
-// `maca::Kernel::load`.  The launch path likewise uses the exported
-// `mcModuleLaunchKernel` rather than a `*LaunchKernelEx` variant: only
-// `mcLaunchKernelExC` exists and it is not an exported symbol, so the
-// attribute-based launch config is flattened onto the classic entry point
-// (see `maca/kernel.hpp`).
+// NOTE: no `mcFuncSetAttribute` / `cuFuncSetAttribute` binding here on
+// purpose.  MACA does not need the maximum-dynamic-shared-memory attribute
+// set before a launch (the launch itself enforces the 64 KiB
+// `sharedMemPerBlockOptin` ceiling), and neither exported spelling is usable
+// for a module-loaded kernel: the native `mcFuncSetAttribute(const void*,
+// ...)` rejects a `mcFunction_t` with mcErrorInvalidDeviceFunction, and
+// `cuFuncSetAttribute` lives in libsymbol_cu.so rather than the
+// libmcruntime.so handle loaded here.  See `maca::Kernel::launch`.
+
+// NOTE: the driver-side kernel *enumeration* used by the CUDA backend is
+// genuinely absent -- `mcLibraryLoadFromFile`, `mcLibraryGetKernelCount`,
+// `mcLibraryEnumerateKernels`, `mcKernelGetFunction`,
+// `mcModuleGetFunctionCount` and `mcModuleEnumerateFunctions` are all
+// missing from libmcruntime.so -- so the loaded artifact must report
+// exactly one kernel and its name is discovered out-of-band by `llvm-nm` on
+// the device artifact (see `maca::Kernel::load`).  (`mcLibraryLoadData` /
+// `mcLibraryUnload` / `mcLibraryGetKernel` do exist, but `mcModuleLoad` is
+// the path the host project's own kernel JIT uses, so the module-level API
+// is kept.)
+//
+// Launching goes through `mcModuleLaunchKernelEx`, which takes an
+// `mcLaunchConfigExtension` (attribute list included) plus a
+// `mcFunction_t` -- the module-level counterpart of `mcLaunchKernelExC`.
+// `mcLaunchKernelExC` is exported too, but takes a host-side kernel *stub*
+// pointer rather than a function handle, so it returns
+// `mcErrorInvalidDeviceFunction` for a module-loaded kernel.
 
 inline void check_maca_driver(const mcError_t error, const char* expression) {
     if (error == mcSuccess)
