@@ -9,10 +9,11 @@
 #include <dlfcn.h>
 #include <exception>
 #include <execinfo.h>
-#include <format>
 #include <string>
 #include <string_view>
 #include <unistd.h>
+
+#include <deep_jit/utils/format.hpp>
 
 namespace deep_jit::exception {
 
@@ -90,7 +91,7 @@ struct DwflApi {
         if (line != nullptr) {
             int line_number = 0;
             const char* file = dwfl_lineinfo(line, nullptr, &line_number, nullptr, nullptr, nullptr);
-            result.file_line = std::format("{}:{}", file == nullptr ? "??" : file, line_number);
+            result.file_line = fmt::format("{}:{}", file == nullptr ? "??" : file, line_number);
         }
         return result;
     }
@@ -144,7 +145,7 @@ inline __attribute__((noinline)) std::string get_backtrace() {
         const auto dwfl_info = api.find(lookup_address);
         const char* function = dwfl_info.function == nullptr ? info.dli_sname : dwfl_info.function;
         const auto library_base = reinterpret_cast<std::uintptr_t>(info.dli_fbase);
-        result += std::format("  #{} {}+{:#x} {} at {}\n",
+        result += fmt::format("  #{} {}+{:#x} {} at {}\n",
                               i,
                               info.dli_fname == nullptr ? "??" : info.dli_fname,
                               lookup_address - library_base,
@@ -184,7 +185,7 @@ public:
 #define DJ_HOST_ASSERT(cond, ...) \
 do { \
     if (not (cond)) { \
-        throw deep_jit::exception::Exception("Assertion", __FILE__, __LINE__, std::string(#cond) __VA_OPT__(+ ": " + std::format(__VA_ARGS__))); \
+        throw deep_jit::exception::Exception("Assertion", __FILE__, __LINE__, std::string(#cond) __VA_OPT__(+ ": " + fmt::format(__VA_ARGS__))); \
     } \
 } while (0)
 #endif
@@ -192,6 +193,6 @@ do { \
 #ifndef DJ_PANIC
 #define DJ_PANIC(...) \
 do { \
-    throw deep_jit::exception::Exception("Panic", __FILE__, __LINE__, std::format(__VA_ARGS__)); \
+    throw deep_jit::exception::Exception("Panic", __FILE__, __LINE__, fmt::format(__VA_ARGS__)); \
 } while (0)
 #endif

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Build the MACA DeepJIT test harness.
 #
-# The host side needs a C++20 standard library: DeepJIT's headers use
-# std::format throughout, and MACA's mxcc is wired to the system GCC 11,
-# whose libstdc++ has no <format>.  The toolchain used here is the conda
-# clang++-22 + GCC-15 libstdc++ + matching sysroot that ships in this
-# environment; the device-side compilation is still mxcc, invoked by the
-# JIT at run time.
+# DeepJIT's headers format through fmt (see include/deep_jit/utils/format.hpp):
+# MACA's mxcc is wired to the system GCC 11, whose libstdc++ has no <format>,
+# so <format> cannot be assumed anywhere DeepJIT gets embedded.  The toolchain
+# used here is the conda clang++-22 + GCC-15 libstdc++ + matching sysroot that
+# ships in this environment; the device-side compilation is still mxcc, invoked
+# by the JIT at run time.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -14,6 +14,8 @@ OUT="${1:-/tmp/djbuild/test_maca}"
 
 MACA_PATH="${MACA_PATH:-/opt/maca}"
 C="${MACA_TOOLCHAIN:-/home/compiler_gfx/gpu_model/tools/hipcc}"
+# fmt is vendored as a sibling checkout by the consuming repositories.
+FMT_ROOT="${FMT_ROOT:-$ROOT/../fmt}"
 SYS="$C/x86_64-conda-linux-gnu/sysroot"
 G15="$C/lib/gcc/x86_64-conda-linux-gnu/15.2.0"
 # GCC's own limits.h (defines _GCC_LIMITS_H_ + include_next) is what the
@@ -31,7 +33,7 @@ mkdir -p "$(dirname "$OUT")"
   -isystem "$G15/include" -isystem "$G15/include/c++" \
   -isystem "$G15/include/c++/x86_64-conda-linux-gnu" -isystem "$G15/include/c++/backward" \
   -isystem "$SYS/usr/include" -isystem "$GCC_LIMITS" \
-  -I"$ROOT/include" \
+  -I"$ROOT/include" -I"$FMT_ROOT/include" \
   -I"$MACA_PATH/include" -I"$MACA_PATH/include/mcr" -I"$MACA_PATH/include/mcc" \
   -I"$MACA_PATH/include/mcsparse" -I"$MACA_PATH/include/mcblas" -I"$MACA_PATH/include/mcsolver" \
   -I"$MACA_PATH/include/misc" -I"$MACA_PATH/include/common" -I"$MACA_PATH/include/mctx" \

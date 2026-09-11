@@ -30,11 +30,20 @@ else()
     set(DEEP_JIT_TOOLKIT_LIBRARIES cuda)
 endif()
 
+# fmt supplies the formatting API.  `<format>` is not available on every host
+# toolchain DeepJIT is embedded into (MACA's mxcc drives the system GCC 11,
+# whose libstdc++ predates it), so the headers go through fmt instead -- see
+# include/deep_jit/utils/format.hpp.  fmt is used header-only, so only the
+# include path is needed.  Defaults to a sibling checkout, which is how the
+# consuming repositories vendor both.
+set(DEEP_JIT_FMT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../fmt" CACHE PATH "Root of an fmt checkout")
+
 find_package(pybind11 REQUIRED)
 find_package(Torch REQUIRED)
 
 include_directories(
     include
+    ${DEEP_JIT_FMT_ROOT}/include
     ${DEEP_JIT_TOOLKIT_INCLUDE_DIRS}
     ${TORCH_INCLUDE_DIRS} ${PYTHON_INCLUDE_DIRS}
 )

@@ -1,11 +1,12 @@
 #pragma once
 
 #include <chrono>
-#include <format>
 #include <random>
 #include <string>
 #include <thread>
 #include <unistd.h>
+
+#include <deep_jit/utils/format.hpp>
 
 namespace deep_jit {
 
@@ -19,7 +20,7 @@ inline std::string get_uuid() {
             static_cast<std::mt19937::result_type>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
     }());
     thread_local std::uniform_int_distribution<uint32_t> distribution;
-    return std::format("{}-{:08x}-{:08x}-{:08x}", ::getpid(), distribution(generator), distribution(generator), distribution(generator));
+    return fmt::format("{}-{:08x}-{:08x}-{:08x}", ::getpid(), distribution(generator), distribution(generator), distribution(generator));
 }
 
 }  // namespace deep_jit

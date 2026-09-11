@@ -9,7 +9,6 @@
 #include <cstring>
 #include <elf.h>
 #include <filesystem>
-#include <format>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -23,6 +22,7 @@
 #include <deep_jit/backend/ascend/options.hpp>
 #include <deep_jit/utils/env.hpp>
 #include <deep_jit/utils/exception.hpp>
+#include <deep_jit/utils/format.hpp>
 #include <deep_jit/utils/gil.hpp>
 
 namespace deep_jit::ascend {
@@ -134,7 +134,7 @@ public:
         const bool debug = env.get<bool>("JIT_DEBUG", false);
         const bool print_load_time = debug or env.get<bool>("JIT_PRINT_LOAD_TIME", false);
         if (debug)
-            std::fputs(std::format("Loading Ascend binary: {}\n", binary_path.string()).c_str(), stdout);
+            std::fputs(fmt::format("Loading Ascend binary: {}\n", binary_path.string()).c_str(), stdout);
         const auto start_time = std::chrono::steady_clock::now();
 
         // Load kernel
@@ -151,7 +151,7 @@ public:
         // Print and return
         if (print_load_time) {
             const std::chrono::duration<double, std::milli> elapsed = std::chrono::steady_clock::now() - start_time;
-            std::fputs(std::format("Load time ({}): {:.2f} ms\n", dir.string(), elapsed.count()).c_str(), stdout);
+            std::fputs(fmt::format("Load time ({}): {:.2f} ms\n", dir.string(), elapsed.count()).c_str(), stdout);
         }
         return kernel;
     }

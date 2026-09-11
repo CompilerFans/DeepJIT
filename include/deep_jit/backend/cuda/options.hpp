@@ -1,6 +1,5 @@
 #pragma once
 
-#include <format>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -14,6 +13,7 @@
 #include <deep_jit/utils/env.hpp>
 #include <deep_jit/utils/exception.hpp>
 #include <deep_jit/utils/filesystem.hpp>
+#include <deep_jit/utils/format.hpp>
 #include <deep_jit/utils/hash.hpp>
 #include <deep_jit/utils/json.hpp>
 #include <deep_jit/utils/str.hpp>
@@ -51,7 +51,7 @@ struct CompilerOptions {
             .dump_sass = dump_asm or env.get<bool>("JIT_DUMP_SASS", false),
             .arch = device.get_arch(),
             .nvcc_flags = std::vector<std::string> {
-                std::format("-std=c++{}", env.get<int>("JIT_CPP_STANDARD", 20)),
+                fmt::format("-std=c++{}", env.get<int>("JIT_CPP_STANDARD", 20)),
                 "--compiler-options=-fPIC",
                 "--compiler-options=-fconcepts",
                 "--expt-relaxed-constexpr",
@@ -112,7 +112,7 @@ struct CompilerOptions {
 
         // Register optimization level
         DJ_HOST_ASSERT(ptxas_register_usage_level.has_value(), "PTXAS register usage level must be specified");
-        flags.emplace_back(std::format("--ptxas-options=--register-usage-level={}", *ptxas_register_usage_level));
+        flags.emplace_back(fmt::format("--ptxas-options=--register-usage-level={}", *ptxas_register_usage_level));
 
         // Error on register spills
         if (check_no_spills.value_or(false))

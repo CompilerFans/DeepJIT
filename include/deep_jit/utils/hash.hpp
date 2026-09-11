@@ -1,9 +1,10 @@
 #pragma once
 
 #include <cstdint>
-#include <format>
 #include <string>
 #include <string_view>
+
+#include <deep_jit/utils/format.hpp>
 
 namespace deep_jit::hash {
 
@@ -33,7 +34,7 @@ public:
             value = (value ^ (value >> 27)) * 0x94d049bb133111ebull;
             return value ^ (value >> 31);
         };
-        return std::format("{:016x}{:016x}", split_mix(state_0), split_mix(state_1));
+        return fmt::format("{:016x}{:016x}", split_mix(state_0), split_mix(state_1));
     }
 };
 

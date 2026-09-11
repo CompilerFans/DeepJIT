@@ -2,16 +2,16 @@
 
 #include <algorithm>
 #include <filesystem>
-#include <format>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
 
-#include <deep_jit/utils/exception.hpp>
 #include <deep_jit/utils/env.hpp>
+#include <deep_jit/utils/exception.hpp>
 #include <deep_jit/utils/filesystem.hpp>
+#include <deep_jit/utils/format.hpp>
 #include <deep_jit/utils/uuid.hpp>
 
 namespace deep_jit {
@@ -117,7 +117,7 @@ struct DiskCache {
                        "cache tag must contain only letters, digits, or underscores: {}", tag);
 
         // Check all cache dirs
-        const auto entry_name = std::format("{}.{}", tag, digest);
+        const auto entry_name = fmt::format("{}.{}", tag, digest);
         for (const auto& dir: paths) {
             const auto path = dir / "cache" / entry_name;
             if (std::filesystem::exists(path / kCommitFileName)) {

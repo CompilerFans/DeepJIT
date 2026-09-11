@@ -1,6 +1,5 @@
 #pragma once
 
-#include <format>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -13,6 +12,7 @@
 #include <deep_jit/utils/env.hpp>
 #include <deep_jit/utils/exception.hpp>
 #include <deep_jit/utils/filesystem.hpp>
+#include <deep_jit/utils/format.hpp>
 #include <deep_jit/utils/hash.hpp>
 #include <deep_jit/utils/json.hpp>
 #include <deep_jit/utils/str.hpp>
@@ -46,7 +46,7 @@ struct CompilerOptions {
             .dump_asm = dump_asm or env.get<bool>("JIT_DUMP_PTX", false),
             .arch = device.get_arch(),
             .mxcc_flags = std::vector<std::string> {
-                std::format("-std=c++{}", env.get<int>("JIT_CPP_STANDARD", 20)),
+                fmt::format("-std=c++{}", env.get<int>("JIT_CPP_STANDARD", 20)),
             },
             .post_hook = std::nullopt
         };
@@ -92,8 +92,12 @@ struct CompilerOptions {
         if (fast_math.value_or(false))
             flags.emplace_back("-use-fast-math");
 
-        // Print per-function resource usage (the mxcc analogue of PTXAS -v)
-        if (compiler_verbose.value_or(false))
+        // Print per-function resource usage (the mxcc analogue of PTXAS -v).
+        // mxcc emits the "N bytes stack frame" line that the spill and
+        // local-memory checks read, and emits it only under this flag, so a
+        // check that validates that report has to request it too.
+        if (compiler_verbose.value_or(false) or check_no_spills.value_or(false) or
+            check_no_local_memory.value_or(false))
             flags.emplace_back("-resource-usage");
 
         // Line info for debugging
