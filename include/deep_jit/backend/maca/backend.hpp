@@ -61,7 +61,6 @@ public:
     explicit MACA(const Env& env)
         : toolkit(find_maca_toolkit(env)),
           compiler_info(get_compiler_info()) {
-        active_toolkit = toolkit;
     }
 
     [[nodiscard]] CompilerInfo get_compiler_info() const {
@@ -135,8 +134,14 @@ public:
             std::fflush(stdout);
         }
         // `-resource-usage` reports the frame size per function as
-        // "N bytes stack frame"; a non-zero value is the spill signal.
-        if (options.check_no_spills.value_or(false)) {
+        // "N bytes stack frame"; a non-zero value is the spill signal.  mxcc
+        // has no second figure: unlike PTXAS there is no local-memory line at
+        // all (measured on a kernel with an 8 KiB frame, mxcc's whole report
+        // is "N bytes stack frame", the register counts and the shared-memory
+        // count), so `check_no_local_memory` validates that same report and
+        // the two checks coincide on MACA.  Both need `-resource-usage` to be
+        // present at all -- see `CompilerOptions::get_flags`.
+        if (options.check_no_spills.value_or(false) or options.check_no_local_memory.value_or(false)) {
             std::smatch match;
             const auto text = compiler_output;
             for (auto begin = text.cbegin(); std::regex_search(begin, text.cend(), match,
@@ -146,10 +151,6 @@ public:
                 begin = match.suffix().first;
             }
         }
-        DJ_HOST_ASSERT(not options.check_no_local_memory.value_or(false) or
-                       not std::regex_search(compiler_output, std::regex(R"(local memory)", std::regex::icase)),
-                       "mxcc reported local memory usage:\n{}",
-                       compiler_output);
         DJ_HOST_ASSERT(std::filesystem::is_regular_file(binary_path) and std::filesystem::file_size(binary_path) != 0,
                        "mxcc did not produce a valid device binary: {}",
                        binary_path.string());
@@ -193,16 +194,16 @@ public:
         write_file_sync(dir / "meta.json", metadata.dump());
     }
 
-    // `Runtime` invokes this statically as `Backend::load(dir, env)`, so the
-    // discovered toolkit is also recorded on the backend and republished
-    // here.  The alternative -- making this non-static so the load can read
-    // `this->toolkit` -- does not fit the `Runtime` call shape shared with
-    // the CUDA and Ascend backends.
-    static inline std::optional<Toolkit> active_toolkit;
-
+    // `Runtime` invokes this statically as `Backend::load(dir, env)`, and the
+    // toolkit is resolved from that same `env` here rather than carried over
+    // from the constructor.  Unlike CUDA's load, this one needs a path out of
+    // the toolkit (`llvm-nm`), so it cannot simply be a pass-through -- but a
+    // process-global would let one Runtime's toolkit silently decide another
+    // Runtime's loads, and would race if two Runtimes were constructed
+    // concurrently.  Resolving per load costs a couple of `stat` calls against
+    // a `dlopen` + `mcModuleLoad`.
     [[nodiscard]] static std::shared_ptr<Kernel> load(const std::filesystem::path& dir, const Env& env) {
-        DJ_HOST_ASSERT(active_toolkit.has_value(), "MACA toolkit was not discovered before load");
-        return Kernel::load(dir, env, active_toolkit->llvm_nm);
+        return Kernel::load(dir, env, find_maca_toolkit(env).llvm_nm);
     }
 
     static Toolkit find_maca_toolkit(const Env& env) {
