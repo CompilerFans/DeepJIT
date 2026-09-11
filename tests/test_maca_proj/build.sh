@@ -35,16 +35,22 @@ PYTHON_LIB="${PYTHON_LIB:-$(python -c 'import sysconfig;print(sysconfig.get_conf
 # The interpreter's ABI version, for `-lpython<X.Y>`, rather than a literal.
 PYTHON_ABI="${PYTHON_ABI:-$(python -c 'import sysconfig;print(sysconfig.get_config_var("LDVERSION"))')}"
 
-for required in "$C/bin/clang++-22" "$G15/include" "$GCC_LIMITS/limits.h"; do
+for required in "$C/bin/clang++-22" "$G15/include" "$GCC_LIMITS/limits.h" \
+                "$MACA_PATH/include" "$FMT_ROOT/include/fmt/format.h"; do
     if [[ ! -e "$required" ]]; then
         echo "build.sh: not found: $required" >&2
-        echo "build.sh: set MACA_TOOLCHAIN (and GCC_LIMITS_INCLUDE) to a usable conda toolchain" >&2
+        echo "build.sh: set MACA_TOOLCHAIN (and GCC_LIMITS_INCLUDE) to a usable conda toolchain," >&2
+        echo "build.sh: and MACA_PATH/FMT_ROOT to the MACA install and the fmt checkout" >&2
         exit 1
     fi
 done
 
 mkdir -p "$(dirname "$OUT")"
 
+# `-DUSE_MACA` is NOT optional scaffolding: the platform's PyTorch headers gate
+# on it (`ATen/Context.h` has a `static_assert(0)` in the `#else` branch), and
+# the backend's own `maca/kernel.hpp` includes `<ATen/cuda/CUDAContext.h>` for
+# the current stream.  Dropping it fails the build inside ATen, not here.
 "$C/bin/clang++-22" "$ROOT/tests/test_maca_proj/main.cpp" -o "$OUT" \
   -std=c++20 -O2 -DUSE_MACA -D_GNU_SOURCE \
   --sysroot="$SYS" --gcc-toolchain="$C" \

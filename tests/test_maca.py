@@ -89,6 +89,21 @@ def gcc_limits_include(toolchain):
     return candidates[-1].parent
 
 
+def gcc_tree(toolchain):
+    """The conda toolchain's GCC tree, located by version glob.
+
+    `build.sh` derives the same directory the same way.  Pinning the version
+    would not fail loudly: clang accepts a nonexistent `-isystem` directory
+    without a word, so a stale pin silently drops the C++ standard-library
+    search paths and the self-containment check then fails with a cascade of
+    unrelated missing-header errors.
+    """
+    base = toolchain / 'lib' / 'gcc' / 'x86_64-conda-linux-gnu'
+    candidates = sorted(path for path in base.glob('*') if path.is_dir())
+    assert candidates, f'no GCC tree under {base}: set MACA_TOOLCHAIN'
+    return candidates[-1]
+
+
 def clear_external_jit_environment():
     """Drop ambient JIT settings so the harness runs on its own defaults."""
     suffixes = COMPILER_OPTION_SUFFIXES + ('JIT_CACHE_DIR',)
@@ -215,7 +230,7 @@ def header_self_containment_command(source):
     (plus the host C++20 standard library); the roots mirror `build.sh`."""
     toolchain = host_toolchain()
     sysroot = toolchain / 'x86_64-conda-linux-gnu' / 'sysroot'
-    gcc15 = toolchain / 'lib' / 'gcc' / 'x86_64-conda-linux-gnu' / '15.2.0'
+    gcc = gcc_tree(toolchain)
     gcc_limits = gcc_limits_include(toolchain)
     torch_root = Path(os.environ.get('TORCH_ROOT') or Path(torch.__file__).resolve().parent)
     maca = maca_path()
@@ -224,6 +239,9 @@ def header_self_containment_command(source):
         str(toolchain / 'bin/clang++-22'), '-fsyntax-only', '-std=c++20',
         '-Werror', '-Wno-attributes', '-Wno-deprecated-declarations',
         '-Wno-missing-field-initializers', '-Wno-psabi', '-Wno-unused-function',
+        # Not optional: the platform's PyTorch headers gate on it (ATen's
+        # Context.h has a static_assert(0) in the #else branch) and the
+        # backend's kernel.hpp includes <ATen/cuda/CUDAContext.h>.
         '-DUSE_MACA', '-D_GNU_SOURCE',
         f'--sysroot={sysroot}', f'--gcc-toolchain={toolchain}',
     ]
@@ -239,8 +257,8 @@ def header_self_containment_command(source):
     ):
         command.append('-I' + str(path))
     for path in (
-        gcc15 / 'include', gcc15 / 'include/c++',
-        gcc15 / 'include/c++/x86_64-conda-linux-gnu', gcc15 / 'include/c++/backward',
+        gcc / 'include', gcc / 'include/c++',
+        gcc / 'include/c++/x86_64-conda-linux-gnu', gcc / 'include/c++/backward',
         sysroot / 'usr/include', gcc_limits,
     ):
         command.extend(['-isystem', str(path)])

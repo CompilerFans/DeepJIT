@@ -25,7 +25,7 @@ DeepJIT handles the JIT infrastructure so that kernel libraries can focus on the
 | Backend | Device toolchain and runtime | Integration requirements |
 | --- | --- | --- |
 | **CUDA** | NVCC compiles CUDA source to CUBIN; the CUDA Driver API loads and launches kernels. | CUDA headers 12.4+, NVCC 12.9+, and PyTorch with CUDA support. |
-| **MACA** | mxcc compiles MACA source to a pre-linked device binary; `libmcruntime` loads and launches kernels. | An MXMACA install providing `mxgpu_llvm/bin/mxcc` and `mxgpu_llvm/bin/llvm-nm` (via `MACA_PATH`, or `/opt/maca`), plus the MACA headers and a PyTorch built for the platform. |
+| **MACA** | mxcc compiles MACA source to a pre-linked device binary; `libmcruntime` loads and launches kernels. | An MXMACA install providing `mxgpu_llvm/bin/mxcc` 1.0+ and `mxgpu_llvm/bin/llvm-nm` (via `MACA_PATH`, or `/opt/maca`), plus the MACA headers and a PyTorch built for the platform. |
 | **Ascend** | Bisheng and ld.lld compile and link Ascend kernel source; ACL loads and launches kernels. | CANN with `bin/bisheng`, `bin/ld.lld`, and the Ascend `adv_api` headers; ACL and `torch_npu` headers and runtime. |
 
 The host environment must provide Linux, a C++20 compiler, [fmt][fmt] (header-only), Python, pybind11, and the dependencies for the selected backend. DeepJIT is intended to be embedded into your extension as a header-only dependency.
@@ -395,7 +395,7 @@ If both CUDA root variables are unset or empty and `which nvcc` fails, DeepJIT t
 
 ## MACA
 
-The MACA backend requires an MXMACA install that provides `mxgpu_llvm/bin/mxcc` and the `llvm-nm` beside it. It compiles `kernel.cu` to `kernel.devbin` with `mxcc -device-bin`, and loads that pre-linked device binary through `mcModuleLoad`. Loading requires exactly one kernel; `compile_without_load()` only builds the artifact and does not perform that check.
+The MACA backend requires an MXMACA install that provides `mxgpu_llvm/bin/mxcc` (version 1.0 or newer) and the `llvm-nm` beside it. It compiles `kernel.cu` to `kernel.devbin` with `mxcc -device-bin`, and loads that pre-linked device binary through `mcModuleLoad`. Loading requires exactly one kernel; `compile_without_load()` only builds the artifact and does not perform that check.
 
 MACA has no driver-side kernel enumeration (`mcModuleGetFunctionCount` and the other enumeration entry points are absent from `libmcruntime`), so the entry-point name is recovered from the device binary itself with the toolchain's `llvm-nm`. `mxcc`'s `-fatbin` bundle and `-fgpu-rdc --device-bc` bitcode form are both loadable, but neither can be read by `llvm-nm`, so `-device-bin` is the one artifact that serves both the discovery and the load path.
 
@@ -433,6 +433,8 @@ deep_jit::maca::CompilerOptions options {
 ```
 
 `mxcc_flags` replaces the default free-form mxcc flag list; structured options such as `optimize_level` are generated separately. `extra_mxcc_flags` appends per-kernel flags such as `-D` definitions. The optimization level, fast math (`-use-fast-math`), the resource report (`-resource-usage`), the spill and local-memory checks, line information, the assembly dump, the architecture, and the post hook are all supported. There is no MACA counterpart for CUDA's `ptxas_register_usage_level`, and no PTX or SASS dump axis.
+
+The MACA structure names its own toolchain's concepts, like the Ascend one does, so the resource report is `compiler_verbose` (`JIT_PTXAS_VERBOSE` is the shared name of the environment variable behind it). `ptxas_verbose` is accepted as an input alias of `compiler_verbose` so that an option set written for the CUDA backend ports over unchanged; it is an override-only alias -- the defaults never set it, and `compiler_verbose` wins if one override carries both -- so `meta.json`, the flags and the cache digest carry a single spelling.
 
 `check_no_spills` and `check_no_local_memory` both reject a non-empty mxcc stack-frame report. mxcc reports one frame-size figure per function and has no separate local-memory line, so the two checks coincide on MACA; enabling either one also adds the `-resource-usage` flag, which is what makes mxcc emit the report in the first place.
 
@@ -480,7 +482,7 @@ The compile tag is not part of the digest. A disk entry is stored as `<cache-roo
 
 ### Environment variables
 
-MACA toolkit discovery checks `MACA_HOME`, `MACA_PATH`, `CUDA_HOME`, and `CUDA_PATH` in that order -- the first non-empty one wins, and the cu-bridge root also carries the `mxgpu_llvm` toolchain as a sibling -- then falls back to `/opt/maca`. The compiler is `<home>/mxgpu_llvm/bin/mxcc`, and `JIT_MXCC_COMPILER` overrides it; `llvm-nm` is resolved next to the selected `mxcc` unless `JIT_LLVM_NM` overrides it. These are read with the library prefix like every other setting.
+MACA toolkit discovery checks `MACA_HOME`, `MACA_PATH`, `CUDA_HOME`, and `CUDA_PATH` in that order -- the first non-empty one wins, and the cu-bridge root also carries the `mxgpu_llvm` toolchain as a sibling -- then falls back to `/opt/maca`. The compiler is `<home>/mxgpu_llvm/bin/mxcc`, and `JIT_MXCC_COMPILER` overrides it; `llvm-nm` is resolved next to the selected `mxcc` unless `JIT_LLVM_NM` overrides it. The four install roots name an installation rather than a library setting, so like `CUDA_HOME`/`CUDA_PATH` on the CUDA backend they are read unprefixed; the `JIT_MXCC_COMPILER` and `JIT_LLVM_NM` overrides do follow the library prefix.
 
 ## Ascend
 

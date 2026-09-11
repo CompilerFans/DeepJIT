@@ -42,6 +42,14 @@ DJ_DECL_LAZY_DL_FUNCTION(get_maca_handle, mcModuleLaunchKernelEx);
 // the path the host project's own kernel JIT uses, so the module-level API
 // is kept.)
 //
+// NOTE: the CUDA backend also binds `cuTensorMapEncodeTiled` (see
+// `cuda/driver.hpp`), which is how a consumer builds a TMA descriptor from
+// the host.  No descriptor-encode entry point exists to bind here: scanning
+// every `*.so*` in the MACA library directory finds no `TensorMap` symbol at
+// all, neither under the `mc` spelling nor under the bridge's `cu*` one, so
+// the TMA-descriptor facility has no MACA counterpart at this layer to
+// document or expose.
+//
 // Launching goes through `mcModuleLaunchKernelEx`, which takes an
 // `mcLaunchConfigExtension` (attribute list included) plus a
 // `mcFunction_t` -- the module-level counterpart of `mcLaunchKernelExC`.

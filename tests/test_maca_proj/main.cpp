@@ -131,8 +131,11 @@ void restore_env(const std::string& name, const std::optional<std::string>& valu
 
 void write_executable(const fs::path& path, const std::string& content) {
     deep_jit::write_file_sync(path, content);
-    std::filesystem::permissions(path, std::filesystem::perms::owner_all,
-                                 std::filesystem::perm_options::add);
+    std::filesystem::permissions(
+        path,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec |
+            std::filesystem::perms::others_exec,
+        std::filesystem::perm_options::add);
 }
 
 std::size_t count_different_bytes(const std::string_view first, const std::string_view second) {
@@ -361,16 +364,11 @@ void test_toolkit_discovery(const fs::path& cache_root) {
     // The library-prefixed override must win over the inherited default.
     const auto fake_dir = cache_root / "fake_toolkit";
     deep_jit::make_dirs(fake_dir);
-    const auto make_executable = [](const fs::path& path, const std::string& content) {
-        deep_jit::write_file_sync(path, content);
-        fs::permissions(path, fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
-                        fs::perm_options::add);
-    };
     const auto fake_mxcc = fake_dir / "mxcc";
-    make_executable(fake_mxcc, "#!/bin/sh\necho 'mxcc version 1.0.0 (test)'\n");
+    write_executable(fake_mxcc, "#!/bin/sh\necho 'mxcc version 1.0.0 (test)'\n");
     // `llvm-nm` is resolved next to mxcc; the fixture must provide both so the
     // discovery exercises the override rather than the executable check.
-    make_executable(fake_dir / "llvm-nm", "#!/bin/sh\nexit 0\n");
+    write_executable(fake_dir / "llvm-nm", "#!/bin/sh\nexit 0\n");
     set_env("TOOLKIT_DISCOVERY_JIT_MXCC_COMPILER", fake_mxcc.string());
     const auto overridden = deep_jit::MACA::find_maca_toolkit(env);
     DJ_HOST_ASSERT(overridden.mxcc == fs::absolute(fake_mxcc).lexically_normal(),
@@ -397,8 +395,8 @@ void test_toolkit_discovery(const fs::path& cache_root) {
     const auto make_home = [&](const std::string& name) {
         const auto bin = cache_root / name / "mxgpu_llvm" / "bin";
         deep_jit::make_dirs(bin);
-        make_executable(bin / "mxcc", "#!/bin/sh\necho 'mxcc version 1.0.0 (test)'\n");
-        make_executable(bin / "llvm-nm", "#!/bin/sh\nexit 0\n");
+        write_executable(bin / "mxcc", "#!/bin/sh\necho 'mxcc version 1.0.0 (test)'\n");
+        write_executable(bin / "llvm-nm", "#!/bin/sh\nexit 0\n");
         return cache_root / name;
     };
     const auto expect_home = [&](const fs::path& expected, const std::string_view message) {
@@ -512,6 +510,29 @@ void test_options(Runtime& runtime) {
         "-std=c++20",
     };
     DJ_HOST_ASSERT(defaults.get_flags() == expected, "unexpected default mxcc flag order");
+
+    // `ptxas_verbose` is CUDA's spelling of `compiler_verbose`: overriding
+    // with it has to survive the port and produce the same flag.
+    const auto by_alias = defaults.override_with(CompilerOptions {.ptxas_verbose = true});
+    const auto by_canonical = defaults.override_with(CompilerOptions {.compiler_verbose = true});
+    const auto alias_flags = by_alias.get_flags();
+    const auto canonical_flags = by_canonical.get_flags();
+    DJ_HOST_ASSERT(by_alias.compiler_verbose == true,
+                   "the ptxas_verbose alias did not reach compiler_verbose");
+    DJ_HOST_ASSERT(alias_flags == canonical_flags,
+                   "the ptxas_verbose alias and compiler_verbose must render the same flags");
+    DJ_HOST_ASSERT(std::ranges::find(alias_flags, "-resource-usage") != alias_flags.end(),
+                   "the ptxas_verbose alias did not request the resource report");
+    // The canonical field wins when one override carries both spellings.
+    const auto both_spellings = defaults.override_with(
+        CompilerOptions {.compiler_verbose = false, .ptxas_verbose = true});
+    const auto both_flags = both_spellings.get_flags();
+    DJ_HOST_ASSERT(both_spellings.compiler_verbose == false and
+                   std::ranges::find(both_flags, "-resource-usage") == both_flags.end(),
+                   "compiler_verbose must win over its ptxas_verbose alias");
+    // The alias is an input only: the defaults never populate it, so the
+    // digest and `meta.json` keep exactly one spelling of the option.
+    DJ_HOST_ASSERT(not defaults.ptxas_verbose.has_value(), "default_options must not set the alias");
 
     const auto& launch_defaults = runtime.default_launch_options;
     DJ_HOST_ASSERT(not launch_defaults.stream.has_value());
@@ -2241,6 +2262,34 @@ void test_library_environment_compatibility(Runtime& runtime, const fs::path& ca
     unset_env("MALFORMED_COMPILER_JIT_MXCC_COMPILER");
     unset_env("JIT_CPP_STANDARD");
     unset_env("JIT_CHECK_NO_SPILLS");
+
+    // The remaining knobs the backend reads -- the resource report, line
+    // information, the assembly dump and the CUDA `JIT_DUMP_PTX` alias that
+    // feeds it -- must reach the defaults through the same chain, and must
+    // also reach the flags they are supposed to generate.
+    set_env("DJ_JIT_PTXAS_VERBOSE", "1");
+    set_env("DJ_JIT_WITH_LINEINFO", "1");
+    set_env("DJ_JIT_DUMP_PTX", "1");
+    const auto inherited = CompilerOptions::default_options(deep_jit::Env("INHERITED"), runtime.device);
+    DJ_HOST_ASSERT(inherited.compiler_verbose == true and inherited.with_line_info == true and
+                   inherited.dump_asm == true,
+                   "DJ_JIT_PTXAS_VERBOSE / DJ_JIT_WITH_LINEINFO / DJ_JIT_DUMP_PTX must be global fallbacks");
+    const auto inherited_flags = inherited.get_flags();
+    DJ_HOST_ASSERT(std::ranges::find(inherited_flags, "-resource-usage") != inherited_flags.end(),
+                   "JIT_PTXAS_VERBOSE must request the mxcc resource report");
+    DJ_HOST_ASSERT(std::ranges::find(inherited_flags, "--generate-line-info") != inherited_flags.end(),
+                   "JIT_WITH_LINEINFO must request line information");
+    unset_env("DJ_JIT_PTXAS_VERBOSE");
+    unset_env("DJ_JIT_WITH_LINEINFO");
+    unset_env("DJ_JIT_DUMP_PTX");
+
+    set_env("JIT_DUMP_ASM", "1");
+    set_env("JIT_PTXAS_VERBOSE", "1");
+    const auto unprefixed_knobs = CompilerOptions::default_options(deep_jit::Env("UNPREFIXED_KNOBS"), runtime.device);
+    DJ_HOST_ASSERT(unprefixed_knobs.dump_asm == false and unprefixed_knobs.compiler_verbose == false,
+                   "unprefixed JIT_DUMP_ASM / JIT_PTXAS_VERBOSE must not be read");
+    unset_env("JIT_DUMP_ASM");
+    unset_env("JIT_PTXAS_VERBOSE");
 
     set_env("JIT_DEBUG", "1");
     const auto unprefixed_options = CompilerOptions::default_options(deep_jit::Env("UNPREFIXED"), runtime.device);

@@ -70,6 +70,20 @@ public:
         std::smatch match;
         DJ_HOST_ASSERT(std::regex_search(version, match, std::regex(R"(mxcc version (\d+)\.(\d+))")),
                        "failed to parse mxcc version from:\n{}", version);
+
+        // Minimum toolchain version, in the shape CUDA uses for NVCC.  The
+        // floor is the toolchain this backend is validated against (MACA 3.7.0
+        // ships `mxcc version 1.0.0`), so it is a diagnostic rather than a
+        // measured feature boundary: raise it once an older toolkit is known
+        // to be unusable.  Without it, a too-old mxcc surfaces as an opaque
+        // compiler error or as the missing-artifact assert below.
+        constexpr int minimum_major = 1;
+        constexpr int minimum_minor = 0;
+        const int major = std::stoi(match[1].str());
+        const int minor = std::stoi(match[2].str());
+        DJ_HOST_ASSERT(major > minimum_major or (major == minimum_major and minor >= minimum_minor),
+                       "mxcc version must be at least {}.{}", minimum_major, minimum_minor);
+
         return { .path = toolkit.mxcc, .version = version };
     }
 
