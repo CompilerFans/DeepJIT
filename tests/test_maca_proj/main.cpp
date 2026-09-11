@@ -384,6 +384,58 @@ void test_toolkit_discovery(const fs::path& cache_root) {
         [&] { deep_jit::MACA::find_maca_toolkit(deep_jit::Env("INVALID_TOOLKIT")); },
         "mxcc compiler is not executable");
     unset_env("INVALID_TOOLKIT_JIT_MXCC_COMPILER");
+
+    // The install-root precedence chain: `MACA_HOME > MACA_PATH > CUDA_HOME >
+    // CUDA_PATH`, with `/opt/maca` only as the last resort.  These name an
+    // installation rather than a library setting, so discovery reads them
+    // UNPREFIXED -- the test drives the raw environment and restores it.
+    const std::array<std::string, 4> home_names = {"MACA_HOME", "MACA_PATH", "CUDA_HOME", "CUDA_PATH"};
+    std::array<std::optional<std::string>, 4> saved_homes;
+    for (std::size_t index = 0; index < home_names.size(); ++index)
+        saved_homes[index] = get_raw_env(home_names[index]);
+
+    const auto make_home = [&](const std::string& name) {
+        const auto bin = cache_root / name / "mxgpu_llvm" / "bin";
+        deep_jit::make_dirs(bin);
+        make_executable(bin / "mxcc", "#!/bin/sh\necho 'mxcc version 1.0.0 (test)'\n");
+        make_executable(bin / "llvm-nm", "#!/bin/sh\nexit 0\n");
+        return cache_root / name;
+    };
+    const auto expect_home = [&](const fs::path& expected, const std::string_view message) {
+        const auto discovered = deep_jit::MACA::find_maca_toolkit(env);
+        DJ_HOST_ASSERT(discovered.mxcc == fs::absolute(expected / "mxgpu_llvm" / "bin" / "mxcc").lexically_normal(),
+                       "{}", message);
+    };
+
+    const auto home_a = make_home("home_a");
+    const auto home_b = make_home("home_b");
+    const auto home_c = make_home("home_c");
+    const auto home_d = make_home("home_d");
+    for (const auto& name: home_names)
+        unset_env(name);
+
+    set_env("CUDA_PATH", home_d.string());
+    expect_home(home_d, "CUDA_PATH was not used when nothing above it was set");
+    set_env("CUDA_HOME", home_c.string());
+    expect_home(home_c, "CUDA_HOME must win over CUDA_PATH");
+    set_env("MACA_PATH", home_b.string());
+    expect_home(home_b, "MACA_PATH must win over the CUDA_* pair");
+    set_env("MACA_HOME", home_a.string());
+    expect_home(home_a, "MACA_HOME must win over MACA_PATH");
+
+    // A home that is set but does not exist is an error, not a reason to try
+    // the next name down: a typo must not silently select a different install.
+    set_env("MACA_HOME", (cache_root / "missing_home").string());
+    expect_failure([&] { (void)deep_jit::MACA::find_maca_toolkit(env); },
+                   "MACA toolkit home was not found");
+
+    for (const auto& name: home_names)
+        unset_env(name);
+    if (fs::exists("/opt/maca"))
+        expect_home("/opt/maca", "the built-in /opt/maca fallback was not used");
+
+    for (std::size_t index = 0; index < home_names.size(); ++index)
+        restore_env(home_names[index], saved_homes[index]);
 }
 
 void test_device_properties(Runtime& runtime) {
@@ -1101,30 +1153,34 @@ void test_mixed_arguments(Runtime& runtime) {
     DJ_MACA_RUNTIME_CHECK(mcMemcpy(device_input, &base, sizeof(int), mcMemcpyHostToDevice));
 
     // Every term is exactly representable in binary32, so the sum has to match
-    // bit for bit.  The pointer argument is passed both ways: as a plain
-    // argument (the driver reads the pointer value out of its host storage)
-    // and through `NoRefPtr`, which hands the driver the pointer itself as
-    // that storage -- so the pointed-to object must be the host copy of the
-    // argument, not the device buffer.
+    // bit for bit: 1 + 2.5 + 4.25 + 8 + 16 + 32 + 1 (bool) + 256 + 64 = 384.75.
     runtime.launch(kernel, {.grid_dim = dim3(1, 1, 1), .block_dim = dim3(1, 1, 1)},
                    device_output, 1, 2.5f, 4.25, static_cast<long long>(8), static_cast<short>(16),
-                   static_cast<unsigned char>(32), device_input);
+                   static_cast<unsigned char>(32), true, static_cast<unsigned long long>(256), device_input);
     DJ_MACA_RUNTIME_CHECK(mcDeviceSynchronize());
 
     float result = 0.0f;
     DJ_MACA_RUNTIME_CHECK(mcMemcpy(&result, device_output, sizeof(float), mcMemcpyDeviceToHost));
-    DJ_HOST_ASSERT(result == 127.75f, "mixed kernel arguments produced the wrong value: {}", result);
+    DJ_HOST_ASSERT(result == 384.75f, "mixed kernel arguments produced the wrong value: {}", result);
 
+    // The same call through `NoRefPtr`, which hands the driver the pointer
+    // itself as the argument's storage.  For a pointer-sized argument this is
+    // observably the same value as the plain form -- the wrapper's address
+    // holds the same bytes the plain form's storage does -- so what this
+    // launch proves is that the wrapper is ACCEPTED here, not that it changes
+    // what the driver reads.  That property needs an argument wider than the
+    // wrapper, and is proven in `large kernel arguments`.
     int* input_argument = device_input;
     runtime.launch(kernel, {.grid_dim = dim3(1, 1, 1), .block_dim = dim3(1, 1, 1)},
                    device_output, 1, 2.5f, 4.25, static_cast<long long>(8), static_cast<short>(16),
-                   static_cast<unsigned char>(32), deep_jit::NoRefPtr {&input_argument});
+                   static_cast<unsigned char>(32), true, static_cast<unsigned long long>(256),
+                   deep_jit::NoRefPtr {&input_argument});
     DJ_MACA_RUNTIME_CHECK(mcDeviceSynchronize());
     DJ_MACA_RUNTIME_CHECK(mcMemcpy(&result, device_output, sizeof(float), mcMemcpyDeviceToHost));
 
     DJ_MACA_RUNTIME_CHECK(mcFree(device_input));
     DJ_MACA_RUNTIME_CHECK(mcFree(device_output));
-    DJ_HOST_ASSERT(result == 127.75f, "a NoRefPtr kernel argument produced the wrong value: {}", result);
+    DJ_HOST_ASSERT(result == 384.75f, "a NoRefPtr kernel argument produced the wrong value: {}", result);
 }
 
 void test_resource_usage_checks(Runtime& runtime) {
