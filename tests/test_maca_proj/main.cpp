@@ -511,6 +511,22 @@ void test_options(Runtime& runtime) {
     };
     DJ_HOST_ASSERT(defaults.get_flags() == expected, "unexpected default mxcc flag order");
 
+    // Each structured option has to emit the flag it means to.  The digest
+    // axis only proves that setting an option CHANGES the flags, so a mangled
+    // spelling would satisfy every other case while the kernel silently
+    // stopped being built with the option.  `-use-fast-math` is the spelling
+    // mxcc documents (`mxcc --help`) and honours -- measured on this platform,
+    // a float kernel with 5 divides keeps 1 of them under the flag and its
+    // device binary differs (24168 against 24160 bytes).
+    const std::vector<std::string> expected_fast_math = {
+        "--offload-arch=xcore" + *defaults.arch,
+        "-O3",
+        "-use-fast-math",
+        "-std=c++20",
+    };
+    const auto fast_math_flags = defaults.override_with(CompilerOptions {.fast_math = true}).get_flags();
+    DJ_HOST_ASSERT(fast_math_flags == expected_fast_math, "fast_math did not emit -use-fast-math");
+
     // `ptxas_verbose` is CUDA's spelling of `compiler_verbose`: overriding
     // with it has to survive the port and produce the same flag.
     const auto by_alias = defaults.override_with(CompilerOptions {.ptxas_verbose = true});
@@ -858,6 +874,15 @@ void test_parser(const fs::path& cache_root) {
     deep_jit::Parser changed({changed_root}, {"maca/"});
     DJ_HOST_ASSERT(parser.parse_into_hash(source) != changed.parse_into_hash(source),
                    "changed include contents must change the hash");
+
+    // A cycle must be refused, and refused without leaving the visited set
+    // dirty -- a stale entry there would make the NEXT parse of the same
+    // source silently take the already-visited branch.
+    const auto cycle_dir = get_test_maca_project_dir() / "include_cycle";
+    deep_jit::Parser cycle_parser({cycle_dir}, {"test_maca/"});
+    expect_failure([&] { cycle_parser.parse_into_hash("#include <test_maca/circular_include_entry.hpp>\n"); },
+                   "circular include");
+    DJ_HOST_ASSERT(cycle_parser.visiting.empty(), "circular include left stale parser state");
 }
 
 // The headline test: compile a kernel with mxcc, load it, run it on the GPU.
@@ -1958,9 +1983,19 @@ void test_include_dirs(const fs::path& cache_root) {
     const auto runtime_original = make_runtime(include_original);
     const auto runtime_same_content = make_runtime(include_same_content);
     const auto runtime_changed_content = make_runtime(include_changed_content);
+    // The one-byte difference sits one level DOWN, in the header that the
+    // tracked value header includes: the two root headers are byte-identical,
+    // so the two artifacts can only differ if the parser descends recursively
+    // (the compiler-side witness of the same descent is `launch_value` below,
+    // 12 against 13).  A difference in the root header would make this case
+    // pass without the recursion ever being exercised, so the root equality is
+    // asserted too.
+    DJ_HOST_ASSERT(deep_jit::read(include_original / "test_maca/tracked_include_value.hpp") ==
+                       deep_jit::read(include_changed_content / "test_maca/tracked_include_value.hpp"),
+                   "the tracked include fixture must differ below the root header, not in it");
     DJ_HOST_ASSERT(count_different_bytes(
-                       deep_jit::read(include_original / "test_maca/tracked_include_value.hpp"),
-                       deep_jit::read(include_changed_content / "test_maca/tracked_include_value.hpp")) == 1,
+                       deep_jit::read(include_original / "test_maca/detail/tracked_offset.hpp"),
+                       deep_jit::read(include_changed_content / "test_maca/detail/tracked_offset.hpp")) == 1,
                    "tracked include fixture must differ by exactly one byte");
 
     const auto artifact_original = runtime_original->compile_without_load("tracked_include", source);
