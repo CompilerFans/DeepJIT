@@ -47,7 +47,44 @@ def maca_path():
 
 
 def host_toolchain():
-    return Path(os.environ.get('MACA_TOOLCHAIN', '/home/compiler_gfx/gpu_model/tools/hipcc'))
+    """Root of the conda host toolchain that builds the harness.
+
+    `MACA_TOOLCHAIN` names it directly; otherwise it is derived from the
+    compiler named by `MACA_HOST_CXX`/`CXX` (both live at `<root>/bin/clang++-22`,
+    the spelling the CUDA driver uses for its `CXX`).  The in-image default is
+    only a default -- every path here is overridable from the environment -- and
+    a toolchain that cannot be found is a hard error, never a skipped check.
+    """
+    root = os.environ.get('MACA_TOOLCHAIN')
+    if root is None:
+        for name in ('MACA_HOST_CXX', 'CXX'):
+            compiler = os.environ.get(name)
+            if compiler:
+                resolved = Path(shutil.which(compiler) or compiler).resolve()
+                root = resolved.parent.parent
+                break
+    if root is None:
+        root = '/home/compiler_gfx/gpu_model/tools/hipcc'
+    root = Path(root)
+    assert (root / 'bin/clang++-22').is_file(), \
+        f'no usable MACA host toolchain at {root}: set MACA_TOOLCHAIN'
+    return root
+
+
+def gcc_limits_include(toolchain):
+    """GCC's own limits.h, which the sysroot's limits.h delegates to.
+
+    It ships in the `llvm` tree beside the toolchain rather than inside it
+    (the toolchain has the C++ headers but no limits.h of its own), so it is
+    located by glob rather than by a pinned version.
+    """
+    explicit = os.environ.get('GCC_LIMITS_INCLUDE')
+    if explicit:
+        return Path(explicit)
+    base = toolchain.parent / 'llvm' / 'lib' / 'gcc' / 'x86_64-conda-linux-gnu'
+    candidates = sorted(base.glob('*/include/limits.h'))
+    assert candidates, f'no GCC limits.h under {base}: set GCC_LIMITS_INCLUDE'
+    return candidates[-1].parent
 
 
 def clear_external_jit_environment():
@@ -127,11 +164,13 @@ def validate_artifacts(cache_root):
 
 
 def validate_header_self_containment(temporary_dir):
-    """Each backend header must compile on its own."""
-    compiler = host_toolchain() / 'bin/clang++-22'
-    if not compiler.is_file():
-        print('skipping header self-containment: host toolchain not found')
-        return
+    """Each backend header must compile on its own.
+
+    A missing toolchain is a failure, not a skip: silently dropping this check
+    is how a header stops being self-contained without anyone noticing.
+    """
+    compiler = host_toolchain() / 'bin' / 'clang++-22'
+    assert compiler.is_file(), f'no host compiler at {compiler}: set MACA_TOOLCHAIN'
     headers = sorted((ROOT / 'include' / 'deep_jit' / 'backend' / 'maca').glob('*.hpp'))
     assert len(headers) == 5, f'expected five MACA backend headers, found {[h.name for h in headers]}'
     for header in headers:
@@ -161,9 +200,7 @@ def header_self_containment_command(source):
     toolchain = host_toolchain()
     sysroot = toolchain / 'x86_64-conda-linux-gnu' / 'sysroot'
     gcc15 = toolchain / 'lib' / 'gcc' / 'x86_64-conda-linux-gnu' / '15.2.0'
-    gcc_limits = Path(os.environ.get(
-        'GCC_LIMITS_INCLUDE',
-        '/home/compiler_gfx/gpu_model/tools/llvm/lib/gcc/x86_64-conda-linux-gnu/15.2.0/include'))
+    gcc_limits = gcc_limits_include(toolchain)
     torch_root = Path(os.environ.get('TORCH_ROOT') or Path(torch.__file__).resolve().parent)
     maca = maca_path()
 
