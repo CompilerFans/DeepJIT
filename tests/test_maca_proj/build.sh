@@ -13,17 +13,35 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="${1:-/tmp/djbuild/test_maca}"
 
 MACA_PATH="${MACA_PATH:-/opt/maca}"
+# Overridable from the environment, like everything else here: the in-image
+# toolchain is only a default, and `tests/test_maca.py` resolves the same root
+# from MACA_TOOLCHAIN / MACA_HOST_CXX / CXX.  Keep the two in step.
 C="${MACA_TOOLCHAIN:-/home/compiler_gfx/gpu_model/tools/hipcc}"
 # fmt is vendored as a sibling checkout by the consuming repositories.
 FMT_ROOT="${FMT_ROOT:-$ROOT/../fmt}"
 SYS="$C/x86_64-conda-linux-gnu/sysroot"
-G15="$C/lib/gcc/x86_64-conda-linux-gnu/15.2.0"
+# The conda toolchain's GCC tree, by version glob rather than by a pinned one.
+G15="$(ls -d "$C"/lib/gcc/x86_64-conda-linux-gnu/*/ 2>/dev/null | tail -1)"
+G15="${G15%/}"
 # GCC's own limits.h (defines _GCC_LIMITS_H_ + include_next) is what the
-# sysroot's limits.h delegates to; clang does not find it on its own.
-GCC_LIMITS="${GCC_LIMITS_INCLUDE:-/home/compiler_gfx/gpu_model/tools/llvm/lib/gcc/x86_64-conda-linux-gnu/15.2.0/include}"
+# sysroot's limits.h delegates to; clang does not find it on its own.  It ships
+# in the `llvm` tree BESIDE the toolchain, not inside it -- the toolchain has
+# the C++ headers but no limits.h of its own -- so it is derived from `$C`
+# rather than pinned, and located by version glob too.
+GCC_LIMITS="${GCC_LIMITS_INCLUDE:-$(ls -d "$C"/../llvm/lib/gcc/*/*/include 2>/dev/null | tail -1)}"
 TORCH="${TORCH_ROOT:-$(python -c 'import torch,os;print(os.path.dirname(torch.__file__))')}"
 PYTHON_INCLUDE="${PYTHON_INCLUDE:-$(python -c 'import sysconfig;print(sysconfig.get_paths()["include"])')}"
 PYTHON_LIB="${PYTHON_LIB:-$(python -c 'import sysconfig;print(sysconfig.get_config_var("LIBDIR"))')}"
+# The interpreter's ABI version, for `-lpython<X.Y>`, rather than a literal.
+PYTHON_ABI="${PYTHON_ABI:-$(python -c 'import sysconfig;print(sysconfig.get_config_var("LDVERSION"))')}"
+
+for required in "$C/bin/clang++-22" "$G15/include" "$GCC_LIMITS/limits.h"; do
+    if [[ ! -e "$required" ]]; then
+        echo "build.sh: not found: $required" >&2
+        echo "build.sh: set MACA_TOOLCHAIN (and GCC_LIMITS_INCLUDE) to a usable conda toolchain" >&2
+        exit 1
+    fi
+done
 
 mkdir -p "$(dirname "$OUT")"
 
@@ -41,7 +59,7 @@ mkdir -p "$(dirname "$OUT")"
   -I"$TORCH/include" -I"$TORCH/include/torch/csrc/api/include" -I"$PYTHON_INCLUDE" \
   -L"$MACA_PATH/lib" -L"$TORCH/lib" -L"$C/lib" -L"$PYTHON_LIB" \
   -Wl,-rpath,"$TORCH/lib" -Wl,-rpath,"$MACA_PATH/lib" -Wl,-rpath,"$PYTHON_LIB" \
-  -ltorch -ltorch_cpu -ltorch_cuda -lc10 -lc10_cuda -lpython3.10 \
+  -ltorch -ltorch_cpu -ltorch_cuda -lc10 -lc10_cuda -lpython"$PYTHON_ABI" \
   -lmcruntime -lruntime_cu -lsymbol_cu -ldw
 
 echo "built: $OUT"

@@ -26,6 +26,8 @@ if not __debug__:
 
 ROOT = Path(__file__).resolve().parent.parent
 TEST_MACA_PROJECT = ROOT / 'tests' / 'test_maca_proj'
+# The only case allowed to report `[ SKIPPED ]`: it needs two devices.
+EXPECTED_SKIPS = {'multiple devices'}
 COMPILER_OPTION_SUFFIXES = (
     'JIT_CHECK_NO_LOCAL_MEMORY',
     'JIT_CHECK_NO_SPILLS',
@@ -111,6 +113,20 @@ def run_harness(binary, temporary_dir):
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     assert result.returncode == 0, f'harness failed with exit code {result.returncode}'
+
+    # Account for every registered case.  The success banner is printed no
+    # matter how many cases skipped, so without this a case that silently
+    # started returning false would pass unnoticed.
+    def cases(marker):
+        return [line.split(']', 1)[1].strip() for line in result.stdout.splitlines()
+                if line.startswith(marker)]
+    ran = cases('[ RUN      ')
+    passed = cases('[       OK ]')
+    skipped = cases('[  SKIPPED ]')
+    assert ran == passed + skipped, \
+        f'case accounting mismatch: {len(ran)} ran, {len(passed)} ok, {len(skipped)} skipped'
+    unexpected = sorted(set(skipped) - EXPECTED_SKIPS)
+    assert not unexpected, f'unexpected skips: {unexpected}'
     return result.stdout
 
 

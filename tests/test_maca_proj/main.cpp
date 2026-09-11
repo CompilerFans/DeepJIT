@@ -98,6 +98,37 @@ void expect_any_failure(Function&& function) {
     DJ_PANIC("expected a failure");
 }
 
+// For failures that a caller can reach through more than one layer, where each
+// layer has its own message: any of the named messages is a correct refusal,
+// anything else is a different failure being mistaken for the expected one.
+template <typename Function>
+void expect_failure_any_of(Function&& function, const std::initializer_list<std::string_view> messages) {
+    try {
+        function();
+    } catch (const std::exception& exception) {
+        const std::string_view text(exception.what());
+        for (const auto message: messages) {
+            if (text.find(message) != std::string_view::npos)
+                return;
+        }
+        DJ_PANIC("expected one of the listed failures, got: {}", text);
+    }
+    DJ_PANIC("expected a failure");
+}
+
+// For a case that has to disturb the ambient environment and put it back.
+std::optional<std::string> get_raw_env(const std::string& name) {
+    const auto value = std::getenv(name.c_str());
+    return value == nullptr ? std::nullopt : std::optional<std::string>(value);
+}
+
+void restore_env(const std::string& name, const std::optional<std::string>& value) {
+    if (value)
+        DJ_HOST_ASSERT(::setenv(name.c_str(), value->c_str(), 1) == 0, "failed to restore {}", name);
+    else
+        DJ_HOST_ASSERT(::unsetenv(name.c_str()) == 0, "failed to unset {}", name);
+}
+
 void write_executable(const fs::path& path, const std::string& content) {
     deep_jit::write_file_sync(path, content);
     std::filesystem::permissions(path, std::filesystem::perms::owner_all,
@@ -261,7 +292,40 @@ void test_environment(const fs::path& cache_root) {
     DJ_HOST_ASSERT(disk_cache.paths.size() == 2);
     DJ_HOST_ASSERT(disk_cache.paths[0] == first_cache);
     DJ_HOST_ASSERT(disk_cache.paths[1] == second_cache);
+
+    // A list with a hole in it is not a list with a default in it.
+    for (const auto& invalid_paths : std::vector<std::string> {
+             "",
+             ":" + first_cache.string(),
+             first_cache.string() + ":",
+             first_cache.string() + "::" + second_cache.string(),
+         }) {
+        set_env("TEST_ENV_JIT_CACHE_DIR", invalid_paths);
+        expect_failure([&] { (void)deep_jit::DiskCache::from_env(env); }, "contains an empty path");
+    }
     unset_env("TEST_ENV_JIT_CACHE_DIR");
+
+    // Below the library prefix: `DJ_` is the global fallback, an unprefixed
+    // name does nothing, and the built-in default is `$HOME/.dj`.
+    const auto saved_home = get_raw_env("HOME");
+    const auto saved_global_cache = get_raw_env("DJ_JIT_CACHE_DIR");
+    const auto global_fallback = cache_root / "global_fallback";
+    set_env("DJ_JIT_CACHE_DIR", global_fallback.string());
+    DJ_HOST_ASSERT(deep_jit::DiskCache::from_env(env).paths == std::vector<fs::path> {global_fallback},
+                   "DJ cache directory was not used as the global fallback");
+    set_env("JIT_CACHE_DIR", (cache_root / "ignored_unprefixed").string());
+    DJ_HOST_ASSERT(deep_jit::DiskCache::from_env(env).paths == std::vector<fs::path> {global_fallback},
+                   "an unprefixed cache directory unexpectedly took effect");
+    unset_env("JIT_CACHE_DIR");
+    unset_env("DJ_JIT_CACHE_DIR");
+    DJ_HOST_ASSERT(saved_home.has_value(), "the test environment must provide HOME");
+    DJ_HOST_ASSERT(deep_jit::DiskCache::from_env(env).paths == std::vector<fs::path> {fs::path(*saved_home) / ".dj"},
+                   "the built-in cache directory is not $HOME/.dj");
+    unset_env("HOME");
+    expect_failure([&] { (void)deep_jit::DiskCache::from_env(env); },
+                   "HOME environment variable must not be empty");
+    restore_env("HOME", saved_home);
+    restore_env("DJ_JIT_CACHE_DIR", saved_global_cache);
 }
 
 void test_config() {
@@ -323,18 +387,62 @@ void test_toolkit_discovery(const fs::path& cache_root) {
 }
 
 void test_device_properties(Runtime& runtime) {
-    const auto family = runtime.device.get_family();
-    const auto arch = runtime.device.get_arch();
+    // A fresh, default-constructed device object must initialize itself on
+    // first use: MACA's `Device` reads the properties only when asked.
+    deep_jit::maca::Device sms_device;
+    DJ_HOST_ASSERT(sms_device.get_num_sms() > 0,
+                   "get_num_sms did not initialize MACA device properties lazily");
+    deep_jit::maca::Device l2_device;
+    DJ_HOST_ASSERT(l2_device.get_num_l2_cache_bytes() > 0,
+                   "get_num_l2_cache_bytes did not initialize MACA device properties lazily");
+    deep_jit::maca::Device smem_device;
+    DJ_HOST_ASSERT(smem_device.get_num_smem_bytes() > 0,
+                   "get_num_smem_bytes did not initialize MACA device properties lazily");
+    deep_jit::maca::Device clock_device;
+    DJ_HOST_ASSERT(clock_device.get_clock_rate() > 0, "get_clock_rate failed on a fresh device object");
+
+    // One properties block serves the whole capability surface, so it is read
+    // once and handed out by reference.
+    const auto& first_prop = runtime.device.get_prop();
+    const auto& second_prop = runtime.device.get_prop();
+    DJ_HOST_ASSERT(&first_prop == &second_prop, "MACA device properties were not cached");
+
     std::printf("           num_sms: %d\n", runtime.device.get_num_sms());
     std::printf("           l2_cache: %d\n", runtime.device.get_num_l2_cache_bytes());
     std::printf("           smem_per_block_optin: %d\n", runtime.device.get_num_smem_bytes());
     std::printf("           clock_rate: %lld\n", static_cast<long long>(runtime.device.get_clock_rate()));
     std::printf("           mc arch: %d.%d -> xcore%s\n",
-                runtime.device.get_arch_major(), runtime.device.get_arch_minor(), arch.c_str());
-    DJ_HOST_ASSERT(runtime.device.get_num_sms() > 0, "device reported no SMs");
-    DJ_HOST_ASSERT(not arch.empty());
-    // The family and the offload target must agree.
-    DJ_HOST_ASSERT(std::to_string(static_cast<int>(family)) == arch);
+                runtime.device.get_arch_major(), runtime.device.get_arch_minor(),
+                runtime.device.get_arch().c_str());
+
+    const auto [major, minor] = runtime.device.get_arch_pair();
+    DJ_HOST_ASSERT(runtime.device.get_arch_major() == major and runtime.device.get_arch_minor() == minor,
+                   "the MACA architecture pair disagrees with the major/minor accessors");
+    DJ_HOST_ASSERT(runtime.device.get_num_sms() > 0, "MACA device has no SMs");
+    DJ_HOST_ASSERT(runtime.device.get_num_l2_cache_bytes() > 0, "MACA device has no L2 cache");
+    DJ_HOST_ASSERT(runtime.device.get_num_smem_bytes() > 0, "MACA device has no shared memory");
+    DJ_HOST_ASSERT(runtime.device.get_clock_rate() > 0, "MACA device clock rate is invalid");
+    DJ_HOST_ASSERT(runtime.device.get_clock_rate() == runtime.device.get_clock_rate(),
+                   "MACA clock rate was not cached");
+
+    // The mc-major -> xcore-family mapping is spelled out HERE as literals.
+    // Comparing the offload target to `get_family()` would be `f(x) == f(x)`:
+    // `get_arch()` is defined as the family's digits, so a wrong `case` label
+    // in that switch would satisfy both sides and go unnoticed.
+    const auto expected_arch = [](const int mc_major) -> std::string_view {
+        switch (mc_major) {
+            case 10: return "1000";
+            case 15: return "1500";
+            case 16: return "1600";
+            default: return {};
+        }
+    }(major);
+    DJ_HOST_ASSERT(not expected_arch.empty(), "the device reported an unsupported mc major: {}", major);
+    DJ_HOST_ASSERT(runtime.device.get_arch() == expected_arch,
+                   "mc major {} must render the offload target xcore{}, got xcore{}",
+                   major, expected_arch, runtime.device.get_arch());
+    DJ_HOST_ASSERT(static_cast<int>(runtime.device.get_family()) == std::stoi(std::string(expected_arch)),
+                   "the device family does not match mc major {}", major);
 }
 
 void test_options(Runtime& runtime) {
@@ -724,7 +832,18 @@ void test_jit_vector_add(Runtime& runtime) {
 }
 
 void test_multiple_kernels_rejected(Runtime& runtime) {
+    // The load path names the entry point, so both ends of the count matter:
+    // an artifact with two kernels and one with none.  Compiling such a source
+    // is not itself an error -- the artifact is written either way -- so the
+    // refusal belongs to the load, and each rejection is preceded by the
+    // successful compile that proves it.
+    const auto no_kernel_source = get_source("no_kernel.cu");
+    check_artifact(runtime.compile_without_load("no_kernel", no_kernel_source), no_kernel_source);
+    expect_failure([&] { (void)runtime.compile("no_kernel", no_kernel_source); },
+                   "expected exactly one kernel");
+
     const auto source = get_source("multiple_kernels.cu");
+    check_artifact(runtime.compile_without_load("multiple_kernels", source), source);
     expect_failure([&] { (void)runtime.compile("multiple_kernels", source); },
                    "expected exactly one kernel");
 }
@@ -1082,6 +1201,16 @@ void test_post_hook(Runtime& runtime, const fs::path& cache_root) {
                        std::string::npos,
                    "metadata does not record the post hook");
 
+    // The hook edits the artifact in place, and that edit is what gets
+    // published.  Without this the case cannot tell a runtime that runs the
+    // hook from one that runs it and then throws its work away.
+    const auto marker = deep_jit::read(artifact / "kernel.devbin");
+    DJ_HOST_ASSERT(marker.find("DJ_POST_HOOK_MARKER") != std::string::npos,
+                   "the post hook's edit of the device binary was not published");
+    DJ_HOST_ASSERT(deep_jit::read(without_hook / "kernel.devbin").find("DJ_POST_HOOK_MARKER") ==
+                       std::string::npos,
+                   "a device binary carries a hook marker without a post hook");
+
     // The hook runs before publication and the artifact is loaded afterwards,
     // so the device binary must still be loadable.
     DJ_HOST_ASSERT(launch_value(runtime, runtime.compile("post_hook", source, options), 41) == 42,
@@ -1094,6 +1223,31 @@ void test_post_hook(Runtime& runtime, const fs::path& cache_root) {
     DJ_HOST_ASSERT(alt_artifact != artifact, "a different post hook must change the cache key");
     DJ_HOST_ASSERT(deep_jit::read(alt_artifact / "post_hook.marker") == "second\n",
                    "the second post hook did not run");
+    // ... and its artifact carries ITS marker, so the two hooks cannot be
+    // confused for one another.
+    const auto alt_marker = deep_jit::read(alt_artifact / "kernel.devbin");
+    DJ_HOST_ASSERT(alt_marker.find("DJ_POST_HOOK_ALT_MARKER") != std::string::npos and
+                       alt_marker.find("DJ_POST_HOOK_MARKER") == std::string::npos,
+                   "the second post hook's edit of the device binary was not published");
+
+    // A hook that fails takes the compilation with it: the caller sees the
+    // hook's exit status, nothing is published, and nothing stays staged.
+    const auto failing_cache = cache_root / "post_hook_failure";
+    set_env("POST_HOOK_FAILURE_JIT_CACHE_DIR", failing_cache.string());
+    const auto failing_runtime = make_runtime_with_prefix("POST_HOOK_FAILURE",
+                                                          get_test_maca_project_dir() / "kernels");
+    const CompilerOptions failing_options {.post_hook = "scripts/failing_post_hook.py"};
+    expect_failure(
+        [&] { (void)failing_runtime->compile_without_load("post_hook_failure", source, failing_options); },
+        "exit code 7");
+    const auto failing_entries = failing_runtime->disk_cache.paths.front() / "cache";
+    if (fs::exists(failing_entries)) {
+        for (const auto& entry: fs::directory_iterator(failing_entries))
+            DJ_HOST_ASSERT(not entry.path().filename().string().starts_with("post_hook_failure."),
+                           "a failed post hook published a cache entry");
+    }
+    check_tmp_is_empty(failing_runtime->disk_cache.paths.front());
+    unset_env("POST_HOOK_FAILURE_JIT_CACHE_DIR");
 
     // The digest tracks the hook contents, not the installation path, and is
     // cached per thread for the lifetime of the process.
@@ -1316,6 +1470,36 @@ void test_multiple_runtimes(const fs::path& cache_root) {
     DJ_HOST_ASSERT(launch_value(*runtime_a, runtime_a->compile("runtime_isolation", source)) == 11);
     DJ_HOST_ASSERT(runtime_b->mem_cache.cache.empty(), "one runtime populated another runtime's memory cache");
     DJ_HOST_ASSERT(launch_value(*runtime_b, runtime_b->compile("runtime_isolation", source)) == 29);
+
+    // The toolkit is resolved per load, not carried on the backend: MACA finds
+    // the entry-point name with `llvm-nm` out of the toolkit, so a runtime that
+    // borrowed another's would be reading a different toolchain's binary.
+    // Runtime B gets an `llvm-nm` that records that it ran and then delegates
+    // to the real one, and B is constructed LAST -- the order that matters if
+    // the toolkit were published to a process-global by the constructor.
+    const auto toolkit_marker = cache_root / "runtime_b_llvm_nm_ran";
+    const auto llvm_nm_shim = cache_root / "llvm_nm_shim";
+    write_executable(llvm_nm_shim,
+                     "#!/bin/sh\n"
+                     "touch \"" + toolkit_marker.string() + "\"\n"
+                     "exec \"" + runtime_a->backend.toolkit.llvm_nm.string() + "\" \"$@\"\n");
+    set_env("RUNTIME_B_JIT_LLVM_NM", llvm_nm_shim.string());
+    const auto toolkit_a = make_runtime_with_prefix("RUNTIME_A", include_dir);
+    const auto toolkit_b = make_runtime_with_prefix("RUNTIME_B", include_dir);
+    DJ_HOST_ASSERT(toolkit_a->backend.toolkit.llvm_nm != toolkit_b->backend.toolkit.llvm_nm,
+                   "the two runtimes did not resolve different toolkits");
+
+    const auto toolkit_source = get_template_source(23);
+    (void)toolkit_a->compile_without_load("toolkit_isolation", toolkit_source);
+    (void)toolkit_b->compile_without_load("toolkit_isolation", toolkit_source);
+    DJ_HOST_ASSERT(not fs::exists(toolkit_marker), "llvm-nm ran without a load");
+    DJ_HOST_ASSERT(launch_value(*toolkit_a, toolkit_a->compile("toolkit_isolation", toolkit_source), 1) == 24,
+                   "runtime A did not load");
+    DJ_HOST_ASSERT(not fs::exists(toolkit_marker), "runtime A loaded through runtime B's toolkit");
+    DJ_HOST_ASSERT(launch_value(*toolkit_b, toolkit_b->compile("toolkit_isolation", toolkit_source), 1) == 24,
+                   "runtime B did not load");
+    DJ_HOST_ASSERT(fs::exists(toolkit_marker), "runtime B did not use its own llvm-nm");
+    unset_env("RUNTIME_B_JIT_LLVM_NM");
 
     // Two runtimes over the same root share the disk cache but not the memory
     // cache, and the process environment is re-read rather than snapshotted
@@ -1568,12 +1752,15 @@ void test_kernel_lifecycle(const fs::path& cache_root) {
     expect_failure([&] { (void)deep_jit::MACA::load(missing_dir, runtime->env); },
                    "missing MACA device binary");
 
-    // A device binary with no `extern "C"` entry point: `llvm-nm` finds no
-    // kernel to load, which the load path reports as a kernel-count failure.
+    // Bytes that are not a device binary at all: the refusal arrives from
+    // whichever layer notices first -- the tool that reads the artifact exits
+    // non-zero, or it finds nothing to name -- so either message is a correct
+    // outcome and neither a driver-level nor an unrelated failure is.
     const auto invalid_dir = cache_root / "invalid_devbin";
     deep_jit::make_dirs(invalid_dir);
     deep_jit::write_file_sync(invalid_dir / "kernel.devbin", "not a device binary");
-    expect_any_failure([&] { (void)deep_jit::MACA::load(invalid_dir, runtime->env); });
+    expect_failure_any_of([&] { (void)deep_jit::MACA::load(invalid_dir, runtime->env); },
+                          {"expected exactly one kernel", "command failed with exit code"});
 
     const auto source = get_template_source(34);
     const auto kernel = runtime->compile("kernel_lifecycle", source);
@@ -1746,7 +1933,8 @@ void test_include_dirs(const fs::path& cache_root) {
     DJ_HOST_ASSERT(untracked_runtime->cache_key(source, untracked_runtime->default_compiler_options) !=
                        runtime_original->cache_key(source, runtime_original->default_compiler_options),
                    "include prefixes must determine whether dependency contents enter the cache key");
-    check_tmp_is_empty(cache_root);
+    // Same root as the rest of the suite: `<cache_root>/cache`.
+    check_tmp_is_empty(cache_root / "cache");
 }
 
 void test_untracked_dependency_include_flags(Runtime& runtime, const fs::path& cache_root) {
@@ -2349,11 +2537,72 @@ void test_backend_output_validation(Runtime& runtime, const fs::path& cache_root
     unset_env("METADATA_FAILURE_JIT_CACHE_DIR");
 }
 
-bool test_multiple_devices() {
+// Two devices, two runtimes.  The point is not that both launch -- it is that
+// a runtime keeps the device it was built on: its properties must not follow
+// the process current device, while the disk cache still follows the
+// architecture, so two devices of the same family share an entry and two of
+// different families do not.  Returns false (a skip) on a single-device host.
+bool test_multiple_devices(const fs::path& cache_root) {
     int num_devices = 0;
     DJ_MACA_RUNTIME_CHECK(mcGetDeviceCount(&num_devices));
     std::printf("           visible devices: %d\n", num_devices);
-    return num_devices >= 2;
+    if (num_devices < 2)
+        return false;
+
+    int original_device = 0;
+    DJ_MACA_RUNTIME_CHECK(mcGetDevice(&original_device));
+    const auto include_dir = get_test_maca_project_dir() / "kernels";
+    const auto shared_cache = cache_root / "multiple_devices";
+    set_env("MULTI_DEVICE_JIT_CACHE_DIR", shared_cache.string());
+
+    try {
+        DJ_MACA_RUNTIME_CHECK(mcSetDevice(0));
+        int device_0_clock_rate = 0;
+        DJ_MACA_RUNTIME_CHECK(mcDeviceGetAttribute(&device_0_clock_rate, mcDeviceAttributeClockRate, 0));
+        const auto runtime_0 = make_runtime_with_prefix("MULTI_DEVICE", include_dir);
+        const auto runtime_0_arch = *runtime_0->default_compiler_options.arch;
+        const auto runtime_0_clock_rate = runtime_0->device.get_clock_rate();
+        const auto source = get_template_source(21);
+        const auto artifact_0 = runtime_0->compile_without_load("multiple_devices", source);
+        const auto kernel_0 = runtime_0->compile("multiple_devices", source);
+        DJ_HOST_ASSERT(launch_value(*runtime_0, kernel_0, 1) == 22, "device 0 launch produced the wrong value");
+
+        DJ_MACA_RUNTIME_CHECK(mcSetDevice(1));
+        const auto runtime_1 = make_runtime_with_prefix("MULTI_DEVICE", include_dir);
+        const auto runtime_1_arch = *runtime_1->default_compiler_options.arch;
+        const auto artifact_1 = runtime_1->compile_without_load("multiple_devices", source);
+        if (runtime_0_arch == runtime_1_arch) {
+            DJ_HOST_ASSERT(artifact_0 == artifact_1,
+                           "matching architectures did not share the disk cache across devices");
+        } else {
+            DJ_HOST_ASSERT(artifact_0 != artifact_1,
+                           "different architectures unexpectedly shared the disk cache");
+        }
+
+        // The process current device is now 1; runtime 0 must be unaffected.
+        DJ_HOST_ASSERT(runtime_0->device.get_arch() == runtime_0_arch,
+                       "runtime device properties changed with the process current device");
+        DJ_HOST_ASSERT(runtime_0_clock_rate == static_cast<int64_t>(device_0_clock_rate) * 1000,
+                       "device clock rate does not match the reported attribute");
+        DJ_HOST_ASSERT(runtime_0->device.get_clock_rate() == runtime_0_clock_rate,
+                       "runtime clock rate was not cached");
+
+        const auto kernel_1 = runtime_1->compile("multiple_devices", source);
+        DJ_HOST_ASSERT(launch_value(*runtime_1, kernel_1, 2) == 23, "device 1 launch produced the wrong value");
+        DJ_MACA_RUNTIME_CHECK(mcSetDevice(0));
+        DJ_HOST_ASSERT(launch_value(*runtime_0, kernel_0, 3) == 24, "device 0 relaunch produced the wrong value");
+        DJ_MACA_RUNTIME_CHECK(mcSetDevice(1));
+        DJ_HOST_ASSERT(launch_value(*runtime_1, kernel_1, 4) == 25, "device 1 relaunch produced the wrong value");
+    } catch (...) {
+        mcSetDevice(original_device);
+        unset_env("MULTI_DEVICE_JIT_CACHE_DIR");
+        throw;
+    }
+
+    DJ_MACA_RUNTIME_CHECK(mcSetDevice(original_device));
+    unset_env("MULTI_DEVICE_JIT_CACHE_DIR");
+    check_tmp_is_empty(shared_cache);
+    return true;
 }
 
 // Compile/load/launch one kernel and report the artifact and the result; used
@@ -2468,10 +2717,13 @@ int main(int argc, char** argv) {
     run_test("cross-family compilation", [&] { test_cross_family_compilation(*runtime, cache_root); });
     run_test("multiple runtimes", [&] { test_multiple_runtimes(cache_root); });
     run_test("large dynamic shared memory", [&] { test_large_dynamic_shared_memory(*runtime); });
-    run_test("multiple devices", [&] { return test_multiple_devices(); });
+    run_test("multiple devices", [&] { return test_multiple_devices(cache_root); });
 
-    // Nothing may be left half-published behind the suite.
-    check_tmp_is_empty(cache_root);
+    // Nothing may be left half-published behind the suite.  The JIT cache root
+    // is `<cache_root>/cache` (see the `TEST_JIT_CACHE_DIR` above) and
+    // `DiskCache` stages under `<jit_cache_root>/tmp`, so the directory to
+    // inspect is the one below, not `cache_root` itself.
+    check_tmp_is_empty(cache_root / "cache");
 
     std::printf("\nAll MACA DeepJIT tests passed.\n");
     return 0;
