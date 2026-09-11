@@ -10,6 +10,7 @@ Run with the MACA environment sourced (MACA_PATH, LD_LIBRARY_PATH including
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import sysconfig
@@ -381,6 +382,94 @@ def validate_multiprocess_compile(binary, temporary_dir):
     print('validated 4-process same-key compilation and cache reuse', flush=True)
 
 
+def validate_crashed_disk_cache_writer(binary, temporary_dir):
+    """A writer killed with its artifact staged must publish nothing, and must
+    not stop the next process from publishing the same key.
+
+    The kill lands inside the compiler step by construction: `mxcc` is replaced
+    by `scripts/mxcc_barrier.sh`, which records that it started and then blocks
+    until it is killed.  The run that recovers afterwards uses the same
+    stand-in without the block, so it reports the same compiler version -- and
+    therefore compiles the same cache key the killed process was working on.
+    """
+    cache_root = temporary_dir / 'crashed_disk_cache'
+    coordination = temporary_dir / 'crashed_disk_cache_coordination'
+    coordination.mkdir()
+    # The harness's own barrier is satisfied from the start: the sync point
+    # this case needs is reaching the compiler, not leaving that barrier.
+    start_path = coordination / 'start'
+    start_path.touch()
+    marker = coordination / 'compiler_started'
+
+    real_mxcc = maca_path() / 'mxgpu_llvm' / 'bin' / 'mxcc'
+    assert real_mxcc.is_file(), f'no mxcc at {real_mxcc}: set MACA_PATH'
+    llvm_nm = real_mxcc.parent / 'llvm-nm'
+    assert llvm_nm.is_file(), f'no llvm-nm beside {real_mxcc}'
+    barrier = TEST_MACA_PROJECT / 'scripts' / 'mxcc_barrier.sh'
+    assert barrier.is_file(), barrier
+
+    environment = harness_environment(temporary_dir)
+    environment['DEEP_JIT_MACA_TEST_CACHE_DIR'] = str(cache_root)
+    # The compiler overrides follow the library prefix (`TEST` is the harness's
+    # own), and `llvm-nm` has to be named because the stand-in does not sit in
+    # a toolkit directory.
+    environment['TEST_JIT_MXCC_COMPILER'] = str(barrier)
+    environment['TEST_JIT_LLVM_NM'] = str(llvm_nm)
+    environment['DEEP_JIT_MACA_TEST_REAL_MXCC'] = str(real_mxcc)
+    environment['DEEP_JIT_MACA_TEST_MXCC_MARKER'] = str(marker)
+
+    def start_worker(block, ready_name):
+        worker_environment = dict(environment)
+        if block:
+            worker_environment['DEEP_JIT_MACA_TEST_MXCC_BLOCK'] = '1'
+        return subprocess.Popen(
+            [str(binary), '--compile-once', 'crashed_writer', '89',
+             str(coordination / ready_name), str(start_path)],
+            env=worker_environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, start_new_session=True)
+
+    crashed = start_worker(block=True, ready_name='crashed_ready')
+    try:
+        deadline = time.monotonic() + 300
+        while not marker.exists():
+            if crashed.poll() is not None:
+                raise AssertionError(crashed.communicate(timeout=5)[0])
+            assert time.monotonic() < deadline, 'the cache writer never reached the compiler step'
+            time.sleep(0.01)
+    finally:
+        try:
+            os.killpg(crashed.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        crashed.communicate(timeout=60)
+
+    cache_dir = cache_root / 'cache'
+    published = list(cache_dir.iterdir()) if cache_dir.is_dir() else []
+    assert not published, f'a killed writer published an entry: {published}'
+    staged = list((cache_root / 'tmp').iterdir())
+    assert len(staged) == 1, f'expected one staging directory from the killed writer: {staged}'
+    assert staged[0].is_dir(), staged[0]
+
+    recovery = start_worker(block=False, ready_name='recovery_ready')
+    output, _ = recovery.communicate(timeout=900)
+    assert recovery.returncode == 0, output
+    artifact_lines = [line for line in output.splitlines() if line.startswith('ARTIFACT=')]
+    assert len(artifact_lines) == 1, output
+    entry = Path(artifact_lines[0].removeprefix('ARTIFACT='))
+    assert entry.parent == cache_dir, entry
+    tag, digest = entry.name.rsplit('.', 1)
+    assert tag == 'crashed_writer', entry
+    assert len(digest) == 32 and all(character in '0123456789abcdef' for character in digest), entry
+    assert (entry / '.committed').is_file(), entry
+    assert (entry / 'kernel.devbin').stat().st_size > 0, entry
+    assert 'RESULT=90' in output, output
+    assert [path.name for path in cache_dir.iterdir()] == [entry.name], list(cache_dir.iterdir())
+    # The killed writer's staging directory is left alone on purpose: another
+    # process may still be using it, so a recovering writer must not collect it.
+    assert staged[0].is_dir(), "recovery removed another process's staging directory"
+    print('validated a killed cache writer: nothing published, recovery published the key', flush=True)
+
+
 def main():
     clear_external_jit_environment()
     temporary_dir = Path(tempfile.mkdtemp(prefix='deep_jit_maca_test_'))
@@ -391,6 +480,7 @@ def main():
         assert 'All MACA DeepJIT tests passed.' in output, 'harness did not report success'
         entries = validate_artifacts(temporary_dir / 'cache')
         validate_multiprocess_compile(binary, temporary_dir)
+        validate_crashed_disk_cache_writer(binary, temporary_dir)
         validate_diagnostic_output(binary, temporary_dir)
         print(f'\nMACA DeepJIT test passed; {len(entries)} cache entries validated.')
     finally:

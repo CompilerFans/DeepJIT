@@ -984,12 +984,53 @@ void test_cache_artifacts(Runtime& runtime, const fs::path& cache_root) {
     DJ_HOST_ASSERT(again == artifact, "disk cache did not reuse the artifact");
 }
 
-void test_dump_asm(Runtime& runtime) {
+void test_dump_and_launch_overhead(Runtime& runtime) {
     const auto source = get_source("scalar_increment.cu");
     const CompilerOptions options {.dump_asm = true};
     const auto artifact = runtime.compile_without_load("dump_asm", source, options);
     DJ_HOST_ASSERT(fs::is_regular_file(artifact / "kernel.s"), "missing device assembly dump");
     DJ_HOST_ASSERT(fs::file_size(artifact / "kernel.s") > 0, "empty device assembly dump");
+
+    // What a launch costs on the CPU -- with the GIL taken and released around
+    // each one -- measured the way the CUDA harness measures it: 100 warmup
+    // launches, then five rounds of 10000, each round timed on the CPU and
+    // followed by a device sync.  MACA had no launch-overhead figure anywhere,
+    // so this is the baseline a launch-path change is compared against.
+    const auto kernel = runtime.compile("launch_overhead", get_source("launch_overhead.cu"));
+    const LaunchOptions launch_options {
+        .grid_dim = dim3(1, 1, 1),
+        .block_dim = dim3(1, 1, 1),
+    };
+    constexpr int warmup_iterations = 100;
+    constexpr int num_rounds = 5;
+    constexpr int benchmark_iterations = 10000;
+    for (int index = 0; index < warmup_iterations; ++index)
+        runtime.launch(kernel, launch_options);
+    DJ_MACA_RUNTIME_CHECK(mcDeviceSynchronize());
+
+    std::array<double, num_rounds> samples{};
+    for (auto& sample: samples) {
+        const auto begin = std::chrono::steady_clock::now();
+        for (int index = 0; index < benchmark_iterations; ++index)
+            runtime.launch(kernel, launch_options);
+        const auto end = std::chrono::steady_clock::now();
+        DJ_MACA_RUNTIME_CHECK(mcDeviceSynchronize());
+        sample = std::chrono::duration<double, std::micro>(end - begin).count() / benchmark_iterations;
+    }
+
+    std::ranges::sort(samples);
+    std::printf("MACA launch CPU overhead with GIL: median %.3f us, min %.3f us\n",
+                samples[num_rounds / 2], samples.front());
+
+    // A tripwire, not a performance gate: the number is the payload and is
+    // compared against a baseline by hand, as on CUDA.  What this catches is a
+    // launch path that started reloading the module or synchronising the
+    // device per launch -- orders of magnitude above the a-few-microsecond
+    // cost -- while sitting far enough above it that a loaded machine cannot
+    // make it flake.
+    DJ_HOST_ASSERT(samples.front() < 1000.0,
+                   "one launch costs {:.3f} us on the CPU: the launch path is doing device work",
+                   samples.front());
 }
 
 void test_launch_option_validation(Runtime& runtime) {
@@ -2845,7 +2886,7 @@ int main(int argc, char** argv) {
     run_test("cache key option matrix", [&] { test_cache_key_option_matrix(*runtime); });
     run_test("cache artifacts", [&] { test_cache_artifacts(*runtime, cache_root); });
     run_test("backend output validation", [&] { test_backend_output_validation(*runtime, cache_root); });
-    run_test("assembly dump", [&] { test_dump_asm(*runtime); });
+    run_test("assembly dump and launch overhead", [&] { test_dump_and_launch_overhead(*runtime); });
     run_test("dump options on cache hit", [&] { test_dump_options_on_cache_hit(cache_root); });
     run_test("post hook", [&] { test_post_hook(*runtime, cache_root); });
     run_test("default post hook", [&] { test_default_post_hook(cache_root); });
