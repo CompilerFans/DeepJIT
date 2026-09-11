@@ -71,12 +71,13 @@ public:
         DJ_HOST_ASSERT(std::regex_search(version, match, std::regex(R"(mxcc version (\d+)\.(\d+))")),
                        "failed to parse mxcc version from:\n{}", version);
 
-        // Minimum toolchain version, in the shape CUDA uses for NVCC.  The
-        // floor is the toolchain this backend is validated against (MACA 3.7.0
-        // ships `mxcc version 1.0.0`), so it is a diagnostic rather than a
-        // measured feature boundary: raise it once an older toolkit is known
-        // to be unusable.  Without it, a too-old mxcc surfaces as an opaque
-        // compiler error or as the missing-artifact assert below.
+        // Minimum toolchain version, in the shape CUDA uses for NVCC.  1.0 is
+        // the SUPPORTED FLOOR, not a measured feature boundary: it is the
+        // toolchain this backend is validated against (MACA 3.7.0 ships
+        // `mxcc version 1.0.0`), and older MACA releases are out of scope
+        // rather than merely untested.  It is a check at all because a
+        // too-old mxcc otherwise surfaces as an opaque compiler error or as
+        // the missing-artifact assert below, never as a version statement.
         constexpr int minimum_major = 1;
         constexpr int minimum_minor = 0;
         const int major = std::stoi(match[1].str());
