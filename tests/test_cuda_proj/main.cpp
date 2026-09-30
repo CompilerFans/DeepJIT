@@ -22,11 +22,11 @@
 #include <vector>
 
 #include <cuda_runtime.h>
-#include <c10/cuda/CUDAGuard.h>
 #include <pybind11/pybind11.h>
 #include <unistd.h>
 
 #include <deep_jit/backend/cuda/backend.hpp>
+#include <deep_jit/backend/cuda/stable_torch_utils.h>
 #include <deep_jit/cache/memory.hpp>
 #include <deep_jit/python_api.hpp>
 #include <deep_jit/utils/command.hpp>
@@ -45,6 +45,8 @@ namespace {
 using Runtime = deep_jit::Runtime<deep_jit::CUDA>;
 using CompilerOptions = deep_jit::cuda::CompilerOptions;
 using LaunchOptions = deep_jit::cuda::LaunchOptions;
+using TorchCUDAStreamGuard = deep_jit::cuda::TorchCUDAStreamGuard;
+using deep_jit::cuda::get_stream_from_pool;
 namespace fs = std::filesystem;
 
 deep_jit::LazyInit<Runtime> python_api_jit(nullptr);
@@ -1882,13 +1884,13 @@ void test_runtime_launch_features(Runtime& runtime) {
 
         runtime.default_launch_options.stream = std::nullopt;
         runtime.default_launch_options.enable_pdl = false;
-        const auto current_stream = c10::cuda::getStreamFromPool();
+        const auto current_stream = get_stream_from_pool(device_index);
 
         cudaGraph_t graph = nullptr;
         cudaGraphExec_t graph_exec = nullptr;
         {
-            const c10::cuda::CUDAStreamGuard stream_guard(current_stream);
-            DJ_CUDA_RUNTIME_CHECK(cudaStreamBeginCapture(current_stream.stream(), cudaStreamCaptureModeGlobal));
+            const TorchCUDAStreamGuard stream_guard(current_stream, device_index);
+            DJ_CUDA_RUNTIME_CHECK(cudaStreamBeginCapture(current_stream, cudaStreamCaptureModeGlobal));
             runtime.launch(
                 kernel, {
                     .num_smem_bytes = sizeof(int),
@@ -1896,12 +1898,12 @@ void test_runtime_launch_features(Runtime& runtime) {
                     .block_dim = dim3(32, 1, 1),
                 },
                 output, argument_storage, 10);
-            DJ_CUDA_RUNTIME_CHECK(cudaStreamEndCapture(current_stream.stream(), &graph));
+            DJ_CUDA_RUNTIME_CHECK(cudaStreamEndCapture(current_stream, &graph));
         }
         check_graph(graph);
         DJ_CUDA_RUNTIME_CHECK(cudaGraphInstantiate(&graph_exec, graph, nullptr, nullptr, 0));
-        DJ_CUDA_RUNTIME_CHECK(cudaGraphLaunch(graph_exec, current_stream.stream()));
-        DJ_CUDA_RUNTIME_CHECK(cudaStreamSynchronize(current_stream.stream()));
+        DJ_CUDA_RUNTIME_CHECK(cudaGraphLaunch(graph_exec, current_stream));
+        DJ_CUDA_RUNTIME_CHECK(cudaStreamSynchronize(current_stream));
         check_output(43, 44);
         DJ_CUDA_RUNTIME_CHECK(cudaGraphExecDestroy(graph_exec));
         DJ_CUDA_RUNTIME_CHECK(cudaGraphDestroy(graph));
@@ -1909,7 +1911,7 @@ void test_runtime_launch_features(Runtime& runtime) {
         graph = nullptr;
         graph_exec = nullptr;
         {
-            const c10::cuda::CUDAStreamGuard stream_guard(current_stream);
+            const TorchCUDAStreamGuard stream_guard(current_stream, device_index);
             DJ_CUDA_RUNTIME_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
             runtime.launch(
                 kernel, {
