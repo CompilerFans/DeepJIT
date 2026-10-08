@@ -470,6 +470,66 @@ def validate_crashed_disk_cache_writer(binary, temporary_dir):
     print('validated a killed cache writer: nothing published, recovery published the key', flush=True)
 
 
+def validate_direct_disk_cache_publication(binary, temporary_dir):
+    """Eight processes stage the same entry and commit at once.
+
+    The `--compile-once` case races the whole compile, so it can only see the
+    end point.  This case drives `DiskCache` directly -- no compiler, no device
+    -- so the entry is still uncommitted when every writer is parked at the
+    barrier; that is what proves the entry is invisible until `commit()` and
+    that one writer's published directory is not mixed with another's files.
+    """
+    cache_root = temporary_dir / 'direct_disk_cache'
+    coordination = temporary_dir / 'direct_disk_cache_coordination'
+    coordination.mkdir()
+    start_path = coordination / 'start'
+    final_path = cache_root / 'cache' / 'atomic_publication.digest'
+    environment = harness_environment(temporary_dir)
+    processes = []
+
+    try:
+        for index in range(8):
+            processes.append(subprocess.Popen(
+                [str(binary), '--publish-once', str(cache_root), str(index),
+                 str(coordination / f'ready_{index}'), str(start_path)],
+                env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, start_new_session=True))
+
+        deadline = time.monotonic() + 60
+        while len(list(coordination.glob('ready_*'))) != len(processes):
+            for process in processes:
+                if process.poll() is not None:
+                    raise AssertionError(process.communicate(timeout=5)[0])
+            assert time.monotonic() < deadline, 'direct cache writers did not reach the commit barrier'
+            time.sleep(0.01)
+        assert not final_path.exists(), 'cache entry became visible before commit'
+        start_path.touch()
+
+        winners = []
+        for process in processes:
+            output, _ = process.communicate(timeout=60)
+            assert process.returncode == 0, output
+            winner_lines = [line for line in output.splitlines() if line.startswith('WINNER=')]
+            assert len(winner_lines) == 1, output
+            winners.append(winner_lines[0].removeprefix('WINNER='))
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate(timeout=60)
+
+    assert len(set(winners)) == 1, winners
+    assert (final_path / '.committed').is_file(), final_path
+    assert (final_path / 'owner_a').read_text() == winners[0], final_path
+    assert (final_path / 'owner_b').read_text() == winners[0], final_path
+    temporary_entries = list((cache_root / 'tmp').iterdir()) if (cache_root / 'tmp').is_dir() else []
+    assert not temporary_entries, f'staging directories were left behind: {temporary_entries}'
+    print('validated direct 8-process atomic directory publication', flush=True)
+
+
 def main():
     clear_external_jit_environment()
     temporary_dir = Path(tempfile.mkdtemp(prefix='deep_jit_maca_test_'))
@@ -480,6 +540,7 @@ def main():
         assert 'All MACA DeepJIT tests passed.' in output, 'harness did not report success'
         entries = validate_artifacts(temporary_dir / 'cache')
         validate_multiprocess_compile(binary, temporary_dir)
+        validate_direct_disk_cache_publication(binary, temporary_dir)
         validate_crashed_disk_cache_writer(binary, temporary_dir)
         validate_diagnostic_output(binary, temporary_dir)
         print(f'\nMACA DeepJIT test passed; {len(entries)} cache entries validated.')

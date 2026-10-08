@@ -406,6 +406,8 @@ The MACA backend requires an MXMACA install that provides `mxgpu_llvm/bin/mxcc` 
 
 MACA has no driver-side kernel enumeration (`mcModuleGetFunctionCount` and the other enumeration entry points are absent from `libmcruntime`), so the entry-point name is recovered from the device binary itself with the toolchain's `llvm-nm`. `mxcc`'s `-fatbin` bundle and `-fgpu-rdc --device-bc` bitcode form are both loadable, but neither can be read by `llvm-nm`, so `-device-bin` is the one artifact that serves both the discovery and the load path.
 
+### Compile and launch
+
 ```cpp
 inline auto jit = deep_jit::create_lazy_jit<deep_jit::MACA>(
     deep_jit::Config(
@@ -439,13 +441,13 @@ deep_jit::maca::CompilerOptions options {
 };
 ```
 
-`mxcc_flags` replaces the default free-form mxcc flag list; structured options such as `optimize_level` are generated separately. `extra_mxcc_flags` appends per-kernel flags such as `-D` definitions. The optimization level, fast math (`-use-fast-math`), the resource report (`-resource-usage`), the spill and local-memory checks, line information, the assembly dump, the architecture, and the post hook are all supported. There is no MACA counterpart for CUDA's `ptxas_register_usage_level`, and no PTX or SASS dump axis.
+`mxcc_flags` replaces the default free-form mxcc flag list; structured options such as `optimize_level` are generated separately. `extra_mxcc_flags` appends per-kernel flags such as `-D` definitions. The optimization level, fast math (`-use-fast-math`), the resource report (`-resource-usage`), the spill and local-memory checks, line information (`with_line_info`), the assembly dump, the architecture, and the post hook are all supported. There is no MACA counterpart for CUDA's `ptxas_register_usage_level`, and no PTX or SASS dump axis.
 
 The MACA structure names its own toolchain's concepts, like the Ascend one does, so the resource report is `compiler_verbose` (`JIT_PTXAS_VERBOSE` is the shared name of the environment variable behind it). `ptxas_verbose` is accepted as an input alias of `compiler_verbose` so that an option set written for the CUDA backend ports over unchanged; it is an override-only alias -- the defaults never set it, and `compiler_verbose` wins if one override carries both -- so `meta.json`, the flags and the cache digest carry a single spelling.
 
 `check_no_spills` and `check_no_local_memory` both reject a non-empty mxcc stack-frame report. mxcc reports one frame-size figure per function and has no separate local-memory line, so the two checks coincide on MACA; enabling either one also adds the `-resource-usage` flag, which is what makes mxcc emit the report in the first place.
 
-MACA launch options include the stream, dynamic shared-memory size, grid, block, cluster, cooperative-launch, and PDL controls. Unset fields inherit from `jit->default_launch_options`. Grid and block dimensions are required and must be positive, and the dynamic shared-memory size cannot be negative. An unset effective stream uses the current PyTorch stream.
+MACA launch options include the stream, dynamic shared-memory size, grid, block, cluster (`cluster_dim`), cooperative-launch, and PDL (`enable_pdl`) controls. Unset fields inherit from `jit->default_launch_options`. Grid and block dimensions are required and must be positive, and the dynamic shared-memory size cannot be negative. An unset effective stream uses the current PyTorch stream.
 
 Two of those controls are not implemented by the MACA runtime: **cluster launch** and **programmatic dependent launch** are rejected with a message naming the unsupported axis, before the driver is reached, because `mcModuleLaunchKernelEx` refuses every launch attribute other than the cooperative flag with `mcErrorInvalidConfiguration`. Only one-dimensional clusters are accepted as an option at all, and `nonportable_cluster_size_allowed` has no MACA counterpart. Dynamic shared memory does not need the maximum-dynamic-shared-memory attribute that CUDA sets: the launch enforces the `sharedMemPerBlockOptin` ceiling itself, and a request above it is refused at launch.
 

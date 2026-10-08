@@ -217,9 +217,56 @@ std::string get_template_source(const int bias) {
         bias);
 }
 
+// The literal is carried as a hexadecimal float (`0x1.4p+3`), the exact form
+// the compiler re-parses: formatting a value into source text and reading it
+// back must reproduce the same float bit for bit, including signed zero and
+// negative values.  The exponent makes `0.0f` distinguishable from `-0.0f`.
+std::string get_float_source(const float value) {
+    return std::format(
+        "extern \"C\" __global__ void template_float_kernel(float* output) {{\n"
+        "    output[0] = {}0x{:a}f;\n"
+        "}}\n",
+        std::signbit(value) ? "-" : "", std::abs(value));
+}
+
 fs::path get_cache_root() {
     const auto value = std::getenv("DEEP_JIT_MACA_TEST_CACHE_DIR");
     return fs::path(value == nullptr ? "/tmp/deep_jit_maca_test" : value);
+}
+
+// Publish one `DiskCache` entry through the writer protocol (stage, then
+// commit) behind a file barrier; several processes run this at once, and the
+// driver asserts they agree on one published directory.  `commit()` is the
+// only place atomicity can be observed, so this drives `DiskCache` directly
+// rather than a compile -- no compiler or device is involved.
+int run_publish_once(const std::string& cache_root, const std::string& owner,
+                     const fs::path& ready_path, const fs::path& start_path) {
+    try {
+        deep_jit::DiskCache cache({fs::absolute(cache_root).lexically_normal()});
+        auto entry = cache.entry("atomic_publication", "digest");
+        DJ_HOST_ASSERT(not entry.hit, "direct cache writer unexpectedly found a cache hit");
+        deep_jit::write_file_sync(entry.path / "owner_a", owner);
+        deep_jit::write_file_sync(entry.path / "owner_b", owner);
+        deep_jit::write_file_sync(ready_path, "ready");
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+        while (not fs::exists(start_path)) {
+            DJ_HOST_ASSERT(std::chrono::steady_clock::now() < deadline,
+                           "direct cache writer did not leave the barrier");
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        const auto published_path = entry.commit();
+        const auto winner = deep_jit::read(published_path / "owner_a");
+        DJ_HOST_ASSERT(deep_jit::read(published_path / "owner_b") == winner,
+                       "atomic cache publication mixed files from different writers");
+        std::printf("WINNER=%s\n", winner.c_str());
+        std::fflush(stdout);
+        return 0;
+    } catch (const std::exception& exception) {
+        std::fprintf(stderr, "direct cache writer failed: %s\n", exception.what());
+        return 1;
+    }
 }
 
 int launch_value(Runtime& runtime, const std::shared_ptr<deep_jit::maca::Kernel>& kernel, const int input = 0) {
@@ -232,6 +279,24 @@ int launch_value(Runtime& runtime, const std::shared_ptr<deep_jit::maca::Kernel>
         DJ_MACA_RUNTIME_CHECK(mcMemcpy(&result, output, sizeof(int), mcMemcpyDeviceToHost));
         DJ_MACA_RUNTIME_CHECK(mcFree(output));
         return result;
+    } catch (...) {
+        mcFree(output);
+        throw;
+    }
+}
+
+// Launch a one-thread kernel that stores a single `float` and read it back as
+// raw bits, so a changed value cannot hide behind float comparison.
+std::uint32_t launch_float(Runtime& runtime, const std::shared_ptr<deep_jit::maca::Kernel>& kernel) {
+    float* output = nullptr;
+    DJ_MACA_RUNTIME_CHECK(mcMalloc(reinterpret_cast<void**>(&output), sizeof(float)));
+    try {
+        runtime.launch(kernel, {.grid_dim = dim3(1, 1, 1), .block_dim = dim3(1, 1, 1)}, output);
+        DJ_MACA_RUNTIME_CHECK(mcDeviceSynchronize());
+        float result = 0;
+        DJ_MACA_RUNTIME_CHECK(mcMemcpy(&result, output, sizeof(float), mcMemcpyDeviceToHost));
+        DJ_MACA_RUNTIME_CHECK(mcFree(output));
+        return std::bit_cast<std::uint32_t>(result);
     } catch (...) {
         mcFree(output);
         throw;
@@ -1492,6 +1557,28 @@ void test_invalid_cache_tag(Runtime& runtime) {
     expect_failure([&] { (void)runtime.compile_without_load("", source); },
                    "cache tag must contain only letters, digits, or underscores");
 }
+
+// A float literal formatted into kernel source must recompile to the same
+// bits.  This guards the fmt port specifically: DeepJIT formats through fmt
+// rather than `<format>`, and the hexadecimal-float form is what makes a
+// changed rounding or sign handling observable (`0.0f` and `-0.0f` differ only
+// in the formatted sign).
+void test_generated_float_literals(Runtime& runtime, const fs::path& cache_root) {
+    const auto float_cache = cache_root / "generated_float_literals";
+    set_env("FLOAT_LITERAL_JIT_CACHE_DIR", float_cache.string());
+    const auto float_runtime = make_runtime_with_prefix("FLOAT_LITERAL",
+                                                        get_test_maca_project_dir() / "kernels");
+
+    const std::array<float, 4> values = {10.0f, -10.0f, -0.0f, 0.125f};
+    for (std::size_t index = 0; index < values.size(); ++index) {
+        const auto source = get_float_source(values[index]);
+        const auto kernel = float_runtime->compile("generated_float_literal_" + std::to_string(index), source);
+        DJ_HOST_ASSERT(launch_float(*float_runtime, kernel) == std::bit_cast<std::uint32_t>(values[index]),
+                       "generated float literal changed value at index {}", index);
+    }
+    unset_env("FLOAT_LITERAL_JIT_CACHE_DIR");
+}
+
 
 void test_secondary_disk_cache(const fs::path& cache_root) {
     const auto primary_cache = cache_root / "secondary_lookup_primary";
@@ -2834,6 +2921,8 @@ int run_diagnostics() {
 int main(int argc, char** argv) {
     if (argc == 6 and std::string_view(argv[1]) == "--compile-once")
         return run_compile_once(argv[2], std::stoi(argv[3]), argv[4], argv[5]);
+    if (argc == 6 and std::string_view(argv[1]) == "--publish-once")
+        return run_publish_once(argv[2], argv[3], argv[4], argv[5]);
     if (argc == 2 and std::string_view(argv[1]) == "--diagnostics")
         return run_diagnostics();
     DJ_HOST_ASSERT(argc == 1, "unexpected arguments");
@@ -2893,6 +2982,7 @@ int main(int argc, char** argv) {
     run_test("generated include graph", [&] { test_generated_include_graph(cache_root); });
     run_test("compiler failure cleanup", [&] { test_compiler_failure_cleanup(*runtime); });
     run_test("invalid cache tag", [&] { test_invalid_cache_tag(*runtime); });
+    run_test("generated float literals", [&] { test_generated_float_literals(*runtime, cache_root); });
     run_test("secondary disk cache", [&] { test_secondary_disk_cache(cache_root); });
     run_test("architecture override", [&] { test_architecture_override(*runtime); });
     run_test("cross-family compilation", [&] { test_cross_family_compilation(*runtime, cache_root); });
