@@ -1,3 +1,4 @@
+import os
 import sys
 import tempfile
 import traceback
@@ -7,6 +8,29 @@ from torch.utils.cpp_extension import load_inline
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def extra_include_paths():
+    """Include roots the embedded headers need beyond this repository's own.
+
+    `deep_jit/utils/exception.hpp` includes `<elfutils/libdwfl.h>`, from the
+    platform's libdw, and the headers format through the vendored fmt checkout
+    (`FMT_ROOT`, a sibling by default) rather than `<format>`.  libdw's root is
+    not on every host's default search path -- the MACA host toolchain carries
+    it, the system default is expected to -- so it is located rather than
+    assumed, and added only when found.
+    """
+    toolchain = Path(os.environ.get('MACA_TOOLCHAIN') or '/home/compiler_gfx/gpu_model/tools/hipcc')
+    maca = Path(os.environ.get('MACA_PATH') or os.environ.get('MACA_HOME') or '/opt/maca')
+    fmt = Path(os.environ.get('FMT_ROOT') or ROOT.parent / 'fmt') / 'include'
+    assert (fmt / 'fmt/format.h').is_file(), f'no fmt checkout at {fmt.parent}: set FMT_ROOT'
+
+    roots = [ROOT / 'include', fmt]
+    for candidate in (toolchain / 'include', maca / 'include'):
+        if (candidate / 'elfutils/libdwfl.h').is_file():
+            roots.append(candidate)
+            break
+    return [str(root) for root in roots]
 
 
 CPP_SOURCE = r'''
@@ -53,7 +77,7 @@ def main() -> None:
                 '-fno-omit-frame-pointer',
                 '-fno-optimize-sibling-calls',
             ],
-            extra_include_paths=[str(ROOT / 'include')],
+            extra_include_paths=extra_include_paths(),
             build_directory=directory,
             with_cuda=False,
             verbose=True,
