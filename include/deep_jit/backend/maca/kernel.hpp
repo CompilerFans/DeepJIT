@@ -112,7 +112,7 @@ public:
                                         const Env& env,
                                         const std::filesystem::path& llvm_nm) {
         // Release GIL to let other Python threads run
-        GilScopedRelease gil_release;
+        [[maybe_unused]] GilScopedRelease gil_release;
 
         // Check existence
         const auto binary_path = dir / "kernel.devbin";
@@ -154,7 +154,7 @@ public:
     template <typename... Args>
     void launch(const LaunchOptions& launch_options, const Args&... args) const {
         // Release GIL to let other Python threads run
-        GilScopedRelease gil_release;
+        [[maybe_unused]] GilScopedRelease gil_release;
 
         // Checks
         DJ_HOST_ASSERT(kernel_handle != nullptr, "kernel must be loaded before launch");

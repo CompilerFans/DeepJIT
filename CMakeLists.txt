@@ -56,6 +56,12 @@ pybind11_add_module(_C csrc/python_api.cpp)
 # at configure time.
 if(DEEP_JIT_PLATFORM STREQUAL "maca")
     target_compile_definitions(_C PRIVATE DEEP_JIT_BACKEND_MACA)
+else()
+    # CUDA targets PyTorch's stable ABI with PyTorch 2.10 as the minimum runtime.
+    target_compile_definitions(_C PRIVATE
+        TORCH_TARGET_VERSION=0x020a000000000000
+        USE_CUDA
+    )
 endif()
 target_link_libraries(_C PRIVATE ${TORCH_LIBRARIES} torch_python ${DEEP_JIT_TOOLKIT_LIBRARIES})
 target_link_options(_C PRIVATE "-Wl,-Bsymbolic-functions")

@@ -28,7 +28,7 @@ DeepJIT handles the JIT infrastructure so that kernel libraries can focus on the
 | **MACA** | mxcc compiles MACA source to a pre-linked device binary; `libmcruntime` loads and launches kernels. | An MXMACA install providing `mxgpu_llvm/bin/mxcc` 1.0+ and `mxgpu_llvm/bin/llvm-nm` (via `MACA_PATH`, or `/opt/maca`), plus the MACA headers and a PyTorch built for the platform. |
 | **Ascend** | Bisheng and ld.lld compile and link Ascend kernel source; ACL loads and launches kernels. | CANN with `bin/bisheng`, `bin/ld.lld`, and the Ascend `adv_api` headers; ACL and `torch_npu` headers and runtime. |
 
-The host environment must provide Linux, a C++20 compiler, [fmt][fmt] (header-only), Python, pybind11, and the dependencies for the selected backend. DeepJIT is intended to be embedded into your extension as a header-only dependency.
+The host environment must provide Linux, a C++20 compiler, [fmt][fmt] (header-only), and the dependencies for the selected backend. The default GIL support also requires Python and pybind11; consumers that manage the GIL themselves can disable it as described under [Integration](#integration). DeepJIT is intended to be embedded into your extension as a header-only dependency. CUDA consumers should compile with `TORCH_TARGET_VERSION=0x020a000000000000` and `USE_CUDA`; this targets PyTorch's stable ABI with PyTorch 2.10 as the minimum runtime version.
 
 DeepJIT formats through fmt rather than `std::format`. `<format>` is a C++20 *library* feature that not every host toolchain has: MACA's `mxcc`, for instance, drives the system GCC 11, whose libstdc++ predates it. Since a header-only library's standard-library requirements become its consumer's requirements, going through fmt keeps DeepJIT embeddable on those toolchains. The formatting language and the output are the same; see [`include/deep_jit/utils/format.hpp`](include/deep_jit/utils/format.hpp).
 
@@ -71,6 +71,13 @@ DeepJIT searches all roots in order and writes cache misses only to the first ro
 The root `CMakeLists.txt` is for debugging and IDE indexing. Integrate the headers into your own extension as described below; the projects under [`tests/test_cuda_proj/`](tests/test_cuda_proj/) and [`tests/test_ascend_proj/`](tests/test_ascend_proj/) provide working pybind11 integration examples, and [`tests/test_maca_proj/`](tests/test_maca_proj/) provides a standalone host binary that drives the same runtime without embedding Python.
 
 ## Integration
+
+GIL management is enabled by default and includes pybind11. Consumers that manage
+the GIL themselves, such as kernels called through `torch.ops`, can compile with
+`-DDJ_DISABLE_GIL=1` to make `deep_jit::GilScopedRelease` a no-op without including
+pybind11 or the Python C API from this helper. In CMake, use
+`target_compile_definitions(my_target PRIVATE DJ_DISABLE_GIL=1)`. Set the macro
+consistently for every source file compiled into the consumer target.
 
 Add `DeepJIT/include` to the include path of the host target, then include:
 
@@ -369,7 +376,7 @@ Set JIT environment variables before the first runtime construction (normally be
 | `JIT_LLVM_NM` | `<mxcc-directory>/llvm-nm` | Overrides the `llvm-nm` used for MACA kernel-name discovery. |
 | `JIT_CPP_STANDARD` | `20` | Selects the C++ standard passed to the device compiler as `-std=c++<value>`. |
 | `JIT_KERNEL_DEBUG_INFO` | `0` | Adds Bisheng kernel debug information (Ascend). |
-| `JIT_LAUNCH_TIMEOUT` | `10` | Sets the Ascend kernel launch timeout in seconds; `0` disables it. |
+| `JIT_LAUNCH_TIMEOUT` | `300` | Sets the Ascend kernel launch timeout in seconds; `0` disables it. |
 | `JIT_PRINT_COMPILER_COMMAND` | `0` | Prints compiler and disassembler commands. |
 | `JIT_PTXAS_VERBOSE` | `0` | Adds verbose PTXAS output and prints it after compilation (CUDA); on MACA it adds `-resource-usage` and prints the report. |
 | `JIT_CHECK_NO_SPILLS` | `0` | Adds `--warn-on-spills` and rejects register spills (CUDA); on MACA it adds `-resource-usage` and rejects a non-empty stack frame. |

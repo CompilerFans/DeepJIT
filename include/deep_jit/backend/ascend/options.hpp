@@ -38,6 +38,7 @@ struct CompilerOptions {
             .bisheng_flags = std::vector<std::string> {
                 "--cce-aicore-only",
                 "-mllvm", "-enable-hiipu-vf-loop-unroll",
+                "-mllvm", "-cce-aicore-dcpreload-args=false",
             },
             .linker_flags = std::vector<std::string> {
                 "-m", "aicorelinux",
@@ -138,7 +139,7 @@ struct LaunchOptions {
             .stream = std::nullopt,
             .num_blocks = std::nullopt,
             .num_ubuf_bytes = 0,
-            .num_launch_timeout_secs = env.get<int>("JIT_LAUNCH_TIMEOUT", 10),
+            .num_launch_timeout_secs = env.get<int>("JIT_LAUNCH_TIMEOUT", 300),
         };
     }
 
