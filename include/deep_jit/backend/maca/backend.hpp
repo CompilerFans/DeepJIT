@@ -222,29 +222,57 @@ public:
     }
 
     static Toolkit find_maca_toolkit(const Env& env) {
-        // Find the MACA home.  `MACA_PATH`/`MACA_HOME` are the install-root
-        // spelling the host project uses; `CUDA_HOME`/`CUDA_PATH` resolve to
-        // the cu-bridge root, whose sibling install layout also holds the
-        // `mxgpu_llvm` toolchain, so accept them too.
-        std::filesystem::path home_path;
-        for (const auto* name: {"MACA_HOME", "MACA_PATH", "CUDA_HOME", "CUDA_PATH"}) {
-            home_path = get_env<std::string>(name);
-            if (not home_path.empty())
-                break;
-        }
-        if (home_path.empty() and std::filesystem::exists("/opt/maca"))
-            home_path = "/opt/maca";
-
-        DJ_HOST_ASSERT(not home_path.empty() and std::filesystem::exists(home_path),
-                       "MACA toolkit home was not found");
-        home_path = std::filesystem::absolute(home_path).lexically_normal();
-
-        // Find mxcc
+        // The lookup ladder mirrors the MACA SDK's own `cucc` wrapper and the
+        // host project's documented order: an explicit setting is
+        // authoritative, then the compiler bin directory (`MACA_CLANG_PATH`),
+        // then the install roots (`MACA_PATH`, then the cu-bridge
+        // `CUDA_HOME`/`CUDA_PATH`, whose sibling layout also carries the
+        // `mxgpu_llvm` toolchain), then `mxcc` on PATH, then the default
+        // `/opt/maca` install.  `MACA_HOME` is deliberately NOT consulted: no
+        // MXMACA install defines it, and an unrelated variable of that name
+        // would shadow the real settings.
         std::filesystem::path mxcc;
         if (const auto path = env.get<std::string>("JIT_MXCC_COMPILER"); path and not path->empty()) {
             mxcc = std::filesystem::absolute(*path).lexically_normal();
+        } else if (const auto clang_path = get_env<std::string>("MACA_CLANG_PATH"); not clang_path.empty()) {
+            // `MACA_CLANG_PATH` names the bin directory itself (commonly
+            // exported with a trailing slash); like the install roots it
+            // names an installation rather than a library setting, so it is
+            // read unprefixed.
+            mxcc = std::filesystem::absolute(std::filesystem::path(clang_path) / "mxcc").lexically_normal();
         } else {
-            mxcc = home_path / "mxgpu_llvm/bin/mxcc";
+            std::filesystem::path home_path;
+            for (const auto* name: {"MACA_PATH", "CUDA_HOME", "CUDA_PATH"}) {
+                home_path = get_env<std::string>(name);
+                if (not home_path.empty())
+                    break;
+            }
+            if (home_path.empty()) {
+                // `mxcc` on PATH, with symlinks resolved so the sibling
+                // `llvm-nm` is looked up next to the real file (`/usr/bin/mxcc`
+                // is typically a symlink into the SDK).
+                try {
+                    auto path = call_external_command("which mxcc");
+                    while (not path.empty() and (path.back() == '\r' or path.back() == '\n'))
+                        path.pop_back();
+                    if (not path.empty()) {
+                        std::error_code error;
+                        const auto canonical = std::filesystem::canonical(path, error);
+                        mxcc = error ? std::filesystem::path(path) : canonical;
+                    }
+                } catch (...) {}
+            }
+            if (mxcc.empty()) {
+                if (home_path.empty() and std::filesystem::exists("/opt/maca"))
+                    home_path = "/opt/maca";
+                // A home that is set but does not exist is an error, not a
+                // reason to try the next name down: a typo must not silently
+                // select a different install.
+                DJ_HOST_ASSERT(not home_path.empty() and std::filesystem::exists(home_path),
+                               "MACA toolkit home was not found");
+                home_path = std::filesystem::absolute(home_path).lexically_normal();
+                mxcc = home_path / "mxgpu_llvm/bin/mxcc";
+            }
         }
         DJ_HOST_ASSERT(is_executable(mxcc), "mxcc compiler is not executable: {}", mxcc.string());
 

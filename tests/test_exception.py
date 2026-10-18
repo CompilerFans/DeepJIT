@@ -21,7 +21,7 @@ def extra_include_paths():
     assumed, and added only when found.
     """
     toolchain = Path(os.environ.get('MACA_TOOLCHAIN') or '/home/compiler_gfx/gpu_model/tools/hipcc')
-    maca = Path(os.environ.get('MACA_PATH') or os.environ.get('MACA_HOME') or '/opt/maca')
+    maca = Path(os.environ.get('MACA_PATH') or '/opt/maca')
     fmt = Path(os.environ.get('FMT_ROOT') or ROOT.parent / 'fmt') / 'include'
     assert (fmt / 'fmt/format.h').is_file(), f'no fmt checkout at {fmt.parent}: set FMT_ROOT'
 

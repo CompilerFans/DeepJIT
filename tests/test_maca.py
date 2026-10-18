@@ -46,7 +46,7 @@ COMPILER_OPTION_SUFFIXES = (
 
 
 def maca_path():
-    return Path(os.environ.get('MACA_PATH') or os.environ.get('MACA_HOME') or '/opt/maca')
+    return Path(os.environ.get('MACA_PATH') or '/opt/maca')
 
 
 def host_toolchain():

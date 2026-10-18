@@ -491,7 +491,7 @@ The compile tag is not part of the digest. A disk entry is stored as `<cache-roo
 
 ### Environment variables
 
-MACA toolkit discovery checks `MACA_HOME`, `MACA_PATH`, `CUDA_HOME`, and `CUDA_PATH` in that order -- the first non-empty one wins, and the cu-bridge root also carries the `mxgpu_llvm` toolchain as a sibling -- then falls back to `/opt/maca`. The compiler is `<home>/mxgpu_llvm/bin/mxcc`, and `JIT_MXCC_COMPILER` overrides it; `llvm-nm` is resolved next to the selected `mxcc` unless `JIT_LLVM_NM` overrides it. The four install roots name an installation rather than a library setting, so like `CUDA_HOME`/`CUDA_PATH` on the CUDA backend they are read unprefixed; the `JIT_MXCC_COMPILER` and `JIT_LLVM_NM` overrides do follow the library prefix.
+MACA toolkit discovery resolves the `mxcc` executable along this ladder: the `JIT_MXCC_COMPILER` override, then the `MACA_CLANG_PATH` bin directory, then the install roots `MACA_PATH`, `CUDA_HOME`, and `CUDA_PATH` in that order -- the first non-empty one wins, and the cu-bridge root also carries the `mxgpu_llvm` toolchain as a sibling -- then `mxcc` on `PATH` (symlinks resolved, so the sibling tools are found next to the real file), and finally `/opt/maca`. `MACA_HOME` is deliberately not consulted: no MXMACA install defines it. The compiler under an install root is `<home>/mxgpu_llvm/bin/mxcc`; `llvm-nm` is resolved next to the selected `mxcc` unless `JIT_LLVM_NM` overrides it. The install roots and `MACA_CLANG_PATH` name an installation rather than a library setting, so like `CUDA_HOME`/`CUDA_PATH` on the CUDA backend they are read unprefixed; the `JIT_MXCC_COMPILER` and `JIT_LLVM_NM` overrides do follow the library prefix.
 
 ## Ascend
 

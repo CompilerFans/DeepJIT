@@ -448,14 +448,17 @@ void test_toolkit_discovery(const fs::path& cache_root) {
         "mxcc compiler is not executable");
     unset_env("INVALID_TOOLKIT_JIT_MXCC_COMPILER");
 
-    // The install-root precedence chain: `MACA_HOME > MACA_PATH > CUDA_HOME >
-    // CUDA_PATH`, with `/opt/maca` only as the last resort.  These name an
-    // installation rather than a library setting, so discovery reads them
-    // UNPREFIXED -- the test drives the raw environment and restores it.
-    const std::array<std::string, 4> home_names = {"MACA_HOME", "MACA_PATH", "CUDA_HOME", "CUDA_PATH"};
-    std::array<std::optional<std::string>, 4> saved_homes;
-    for (std::size_t index = 0; index < home_names.size(); ++index)
-        saved_homes[index] = get_raw_env(home_names[index]);
+    // The compiler bin directory and the install-root precedence chain:
+    // `MACA_CLANG_PATH` (bin dir) > `MACA_PATH` > `CUDA_HOME` > `CUDA_PATH` >
+    // `mxcc` on PATH, with `/opt/maca` only as the last resort.  `MACA_HOME`
+    // is deliberately not consulted -- no MXMACA install defines it.  These
+    // name an installation rather than a library setting, so discovery reads
+    // them UNPREFIXED -- the test drives the raw environment and restores it.
+    const std::array<std::string, 5> discovery_names =
+        {"MACA_CLANG_PATH", "MACA_PATH", "CUDA_HOME", "CUDA_PATH", "PATH"};
+    std::array<std::optional<std::string>, 5> saved_discovery;
+    for (std::size_t index = 0; index < discovery_names.size(); ++index)
+        saved_discovery[index] = get_raw_env(discovery_names[index]);
 
     const auto make_home = [&](const std::string& name) {
         const auto bin = cache_root / name / "mxgpu_llvm" / "bin";
@@ -464,41 +467,79 @@ void test_toolkit_discovery(const fs::path& cache_root) {
         write_executable(bin / "llvm-nm", "#!/bin/sh\nexit 0\n");
         return cache_root / name;
     };
-    const auto expect_home = [&](const fs::path& expected, const std::string_view message) {
+    const auto expect_mxcc = [&](const fs::path& expected, const std::string_view message) {
         const auto discovered = deep_jit::MACA::find_maca_toolkit(env);
-        DJ_HOST_ASSERT(discovered.mxcc == fs::absolute(expected / "mxgpu_llvm" / "bin" / "mxcc").lexically_normal(),
+        DJ_HOST_ASSERT(discovered.mxcc == fs::absolute(expected).lexically_normal(),
                        "{}", message);
     };
+    const auto expect_home = [&](const fs::path& expected, const std::string_view message) {
+        expect_mxcc(expected / "mxgpu_llvm" / "bin" / "mxcc", message);
+    };
 
-    const auto home_a = make_home("home_a");
+    const auto clang_bin = cache_root / "clang_bin";
+    deep_jit::make_dirs(clang_bin);
+    write_executable(clang_bin / "mxcc", "#!/bin/sh\necho 'mxcc version 1.0.0 (test)'\n");
+    write_executable(clang_bin / "llvm-nm", "#!/bin/sh\nexit 0\n");
+    const auto path_bin = cache_root / "path_bin";
+    deep_jit::make_dirs(path_bin);
+    write_executable(path_bin / "mxcc", "#!/bin/sh\necho 'mxcc version 1.0.0 (test)'\n");
+    write_executable(path_bin / "llvm-nm", "#!/bin/sh\nexit 0\n");
     const auto home_b = make_home("home_b");
     const auto home_c = make_home("home_c");
     const auto home_d = make_home("home_d");
-    for (const auto& name: home_names)
+    for (const auto& name: discovery_names)
         unset_env(name);
 
+    // The bin-directory setting wins over every install root.
+    set_env("MACA_CLANG_PATH", clang_bin.string());
+    set_env("MACA_PATH", home_b.string());
+    expect_mxcc(clang_bin / "mxcc", "MACA_CLANG_PATH must win over MACA_PATH");
+    {
+        const auto discovered = deep_jit::MACA::find_maca_toolkit(env);
+        DJ_HOST_ASSERT(discovered.llvm_nm == fs::absolute(clang_bin / "llvm-nm").lexically_normal(),
+                       "llvm-nm was not resolved next to the MACA_CLANG_PATH mxcc");
+    }
+    unset_env("MACA_CLANG_PATH");
+
+    // A clang path that is set but carries no executable mxcc is an error,
+    // not a reason to try the next rung down.
+    set_env("MACA_CLANG_PATH", (cache_root / "missing_clang_bin").string());
+    expect_failure([&] { (void)deep_jit::MACA::find_maca_toolkit(env); },
+                   "mxcc compiler is not executable");
+    unset_env("MACA_CLANG_PATH");
+
+    // The install-root chain: `MACA_PATH > CUDA_HOME > CUDA_PATH`.
     set_env("CUDA_PATH", home_d.string());
     expect_home(home_d, "CUDA_PATH was not used when nothing above it was set");
     set_env("CUDA_HOME", home_c.string());
     expect_home(home_c, "CUDA_HOME must win over CUDA_PATH");
-    set_env("MACA_PATH", home_b.string());
     expect_home(home_b, "MACA_PATH must win over the CUDA_* pair");
-    set_env("MACA_HOME", home_a.string());
-    expect_home(home_a, "MACA_HOME must win over MACA_PATH");
 
     // A home that is set but does not exist is an error, not a reason to try
     // the next name down: a typo must not silently select a different install.
-    set_env("MACA_HOME", (cache_root / "missing_home").string());
+    set_env("MACA_PATH", (cache_root / "missing_home").string());
     expect_failure([&] { (void)deep_jit::MACA::find_maca_toolkit(env); },
                    "MACA toolkit home was not found");
 
-    for (const auto& name: home_names)
-        unset_env(name);
-    if (fs::exists("/opt/maca"))
-        expect_home("/opt/maca", "the built-in /opt/maca fallback was not used");
+    // `mxcc` on PATH is the last rung before the built-in default.  The
+    // system dirs stay on PATH so the `which` probe itself still resolves.
+    unset_env("MACA_PATH");
+    unset_env("CUDA_HOME");
+    unset_env("CUDA_PATH");
+    set_env("PATH", path_bin.string() + ":/usr/bin:/bin");
+    expect_mxcc(fs::canonical(path_bin / "mxcc"), "mxcc on PATH was not used");
 
-    for (std::size_t index = 0; index < home_names.size(); ++index)
-        restore_env(home_names[index], saved_homes[index]);
+    if (fs::exists("/opt/maca")) {
+        // PATH with no mxcc anywhere lets discovery fall through to the
+        // built-in default.
+        const auto empty_bin = cache_root / "empty_bin";
+        deep_jit::make_dirs(empty_bin);
+        set_env("PATH", empty_bin.string() + ":/usr/bin:/bin");
+        expect_home("/opt/maca", "the built-in /opt/maca fallback was not used");
+    }
+
+    for (std::size_t index = 0; index < discovery_names.size(); ++index)
+        restore_env(discovery_names[index], saved_discovery[index]);
 }
 
 void test_device_properties(Runtime& runtime) {
