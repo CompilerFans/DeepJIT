@@ -287,7 +287,7 @@ The cache key assumes the external compiler environment is stable. Variables suc
 
 ### Environment variables
 
-MACA toolkit discovery resolves `mxcc` in this order: `JIT_MXCC_COMPILER`, the `MACA_CLANG_PATH` bin directory, the first non-empty of `MACA_PATH`/`CUDA_HOME`/`CUDA_PATH`, `mxcc` on `PATH` (with symlinks resolved), then `/opt/maca`. `MACA_HOME` is not consulted. Under an install root the compiler is `<home>/mxgpu_llvm/bin/mxcc`, and `llvm-nm` is resolved beside it unless `JIT_LLVM_NM` is set. Install roots and `MACA_CLANG_PATH` are read unprefixed; the two `JIT_*` overrides follow the library prefix.
+MACA toolkit discovery resolves `mxcc` in this order: `JIT_MXCC_COMPILER`, the `MACA_CLANG_PATH` bin directory, the `MACA_PATH` install root, `mxcc` on `PATH` (with symlinks resolved), then `/opt/maca`. `MACA_HOME` and the CUDA_* pair are not consulted: `CUDA_HOME`/`CUDA_PATH` name the cu-bridge root in this ecosystem (a subdirectory with no `mxgpu_llvm/`), so as an install root they could only fail. Under an install root the compiler is `<home>/mxgpu_llvm/bin/mxcc`, and `llvm-nm` is resolved beside it unless `JIT_LLVM_NM` is set. Install roots and `MACA_CLANG_PATH` are read unprefixed; the two `JIT_*` overrides follow the library prefix.
 
 ## Include parser
 
@@ -357,7 +357,6 @@ Set JIT environment variables before the first runtime construction (normally be
 | Variable | Behavior |
 | --- | --- |
 | `HOME` | Required for the default `$HOME/.dj` cache path. |
-| `MACA_PATH` | First MACA install-root candidate. |
-| `MACA_CLANG_PATH` | Bin directory holding `mxcc`, tried before the install roots. |
-| `CUDA_HOME` / `CUDA_PATH` | Install-root fallbacks for the cu-bridge layout when `MACA_PATH` is unset. |
+| `MACA_PATH` | The MACA install root. |
+| `MACA_CLANG_PATH` | Bin directory holding `mxcc`, tried before the install root. |
 | `PATH` | Used by `which mxcc` when no root is configured. |

@@ -188,20 +188,19 @@ public:
     }
 
     static Toolkit find_maca_toolkit(const Env& env) {
-        // Order: JIT_MXCC_COMPILER, MACA_CLANG_PATH, MACA_PATH/CUDA_HOME/
-        // CUDA_PATH, `mxcc` on PATH, /opt/maca.  MACA_HOME is not used.
+        // Order: JIT_MXCC_COMPILER, MACA_CLANG_PATH, MACA_PATH, `mxcc` on
+        // PATH, /opt/maca.  MACA_HOME and the CUDA_* pair are not consulted:
+        // this backend is MACA-only, and in this ecosystem CUDA_HOME /
+        // CUDA_PATH name the cu-bridge root -- a subdirectory with no
+        // mxgpu_llvm/ -- so as an install root they could only turn
+        // "MACA_PATH unset" into a hard error instead of falling through.
         std::filesystem::path mxcc;
         if (const auto path = env.get<std::string>("JIT_MXCC_COMPILER"); path and not path->empty()) {
             mxcc = std::filesystem::absolute(*path).lexically_normal();
         } else if (const auto clang_path = get_env<std::string>("MACA_CLANG_PATH"); not clang_path.empty()) {
             mxcc = std::filesystem::absolute(std::filesystem::path(clang_path) / "mxcc").lexically_normal();
         } else {
-            std::filesystem::path home_path;
-            for (const auto* name: {"MACA_PATH", "CUDA_HOME", "CUDA_PATH"}) {
-                home_path = get_env<std::string>(name);
-                if (not home_path.empty())
-                    break;
-            }
+            std::filesystem::path home_path = get_env<std::string>("MACA_PATH");
             if (home_path.empty()) {
                 // Resolve symlinks so the sibling `llvm-nm` is found next to
                 // the real file.

@@ -173,9 +173,11 @@ exists for packaging namespace only.
 - **Format through fmt, never `std::format`, in `include/deep_jit/**`.** `<format>` predates some host
   toolchains DeepJIT gets embedded into (mxcc drives a GCC 11 libstdc++), and a header-only library's
   stdlib floor becomes its consumer's. `utils/format.hpp` defines `FMT_HEADER_ONLY` and pulls
-  `<fmt/format.h>`; the consumer supplies the include path. The test harnesses under `tests/` are
-  built with a modern host toolchain and do use `std::format` — that is not a precedent for the
-  headers.
+  `<fmt/format.h>`; the consumer supplies the include path. The test harnesses under `tests/` format
+  through fmt as well (they go through `deep_jit/utils/format.hpp`), so the whole tree builds with
+  the host toolchain's C++20 — including the GCC 11 behind `mxcc`. The two libraries are not
+  interchangeable for `{:a}`: fmt prints printf's `0x` prefix, while `std::format` follows
+  `to_chars` and omits it.
 - **Kernel arguments**: pass raw values (the driver takes their address) or wrap a pointer to
   host-side storage in `deep_jit::NoRefPtr{ptr}` when that address already holds the argument value
   and the wrapper must not be addressed itself. `kernel_arg_pointer` in `maca/kernel.hpp` implements

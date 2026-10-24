@@ -8,7 +8,6 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
-#include <format>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -32,6 +31,7 @@
 #include <deep_jit/utils/env.hpp>
 #include <deep_jit/utils/exception.hpp>
 #include <deep_jit/utils/filesystem.hpp>
+#include <deep_jit/utils/format.hpp>
 #include <deep_jit/utils/hash.hpp>
 #include <deep_jit/utils/json.hpp>
 #include <deep_jit/utils/no_ref_ptr.hpp>
@@ -207,7 +207,7 @@ std::shared_ptr<Runtime> make_runtime(const fs::path& include_dir,
 // The compile-time constant lives in the source text, so two biases are two
 // different cache entries by construction.
 std::string get_template_source(const int bias) {
-    return std::format(
+    return fmt::format(
         "extern \"C\" __global__ void template_add_kernel(int* output, const int input) {{\n"
         "    output[0] = input + {};\n"
         "}}\n",
@@ -217,9 +217,11 @@ std::string get_template_source(const int bias) {
 // The literal is a hexadecimal float, the exact form the compiler re-parses.
 // Formatting and reading back must preserve every bit, including signed zero.
 std::string get_float_source(const float value) {
-    return std::format(
+    return fmt::format(
         "extern \"C\" __global__ void template_float_kernel(float* output) {{\n"
-        "    output[0] = {}0x{:a}f;\n"
+        // fmt's `{:a}` prints the `0x` prefix itself (printf's `%a`); the
+        // `std::format` form this replaced followed `to_chars`, which omits it.
+        "    output[0] = {}{:a}f;\n"
         "}}\n",
         std::signbit(value) ? "-" : "", std::abs(value));
 }
@@ -441,12 +443,14 @@ void test_toolkit_discovery(const fs::path& cache_root) {
         "mxcc compiler is not executable");
     unset_env("INVALID_TOOLKIT_JIT_MXCC_COMPILER");
 
-    // Discovery order: MACA_CLANG_PATH > MACA_PATH > CUDA_HOME > CUDA_PATH >
-    // PATH > /opt/maca.  These names are unprefixed and MACA_HOME is unused,
-    // so the test drives and restores the raw environment.
-    const std::array<std::string, 5> discovery_names =
-        {"MACA_CLANG_PATH", "MACA_PATH", "CUDA_HOME", "CUDA_PATH", "PATH"};
-    std::array<std::optional<std::string>, 5> saved_discovery;
+    // Discovery order: MACA_CLANG_PATH > MACA_PATH > PATH > /opt/maca.  These
+    // names are unprefixed, MACA_HOME and the CUDA_* pair are unused, so the
+    // test drives and restores the raw environment.  CUDA_HOME/CUDA_PATH are
+    // deliberately absent from the ladder: in this ecosystem they name the
+    // cu-bridge root, which has no mxgpu_llvm/, so as an install root they
+    // could only fail.
+    const std::array<std::string, 3> discovery_names = {"MACA_CLANG_PATH", "MACA_PATH", "PATH"};
+    std::array<std::optional<std::string>, 3> saved_discovery;
     for (std::size_t index = 0; index < discovery_names.size(); ++index)
         saved_discovery[index] = get_raw_env(discovery_names[index]);
 
@@ -475,12 +479,10 @@ void test_toolkit_discovery(const fs::path& cache_root) {
     write_executable(path_bin / "mxcc", "#!/bin/sh\necho 'mxcc version 1.0.0 (test)'\n");
     write_executable(path_bin / "llvm-nm", "#!/bin/sh\nexit 0\n");
     const auto home_b = make_home("home_b");
-    const auto home_c = make_home("home_c");
-    const auto home_d = make_home("home_d");
     for (const auto& name: discovery_names)
         unset_env(name);
 
-    // The bin-directory setting wins over every install root.
+    // The bin-directory setting wins over the install root.
     set_env("MACA_CLANG_PATH", clang_bin.string());
     set_env("MACA_PATH", home_b.string());
     expect_mxcc(clang_bin / "mxcc", "MACA_CLANG_PATH must win over MACA_PATH");
@@ -498,33 +500,29 @@ void test_toolkit_discovery(const fs::path& cache_root) {
                    "mxcc compiler is not executable");
     unset_env("MACA_CLANG_PATH");
 
-    // The install-root chain: `MACA_PATH > CUDA_HOME > CUDA_PATH`.
-    set_env("CUDA_PATH", home_d.string());
-    expect_home(home_d, "CUDA_PATH was not used when nothing above it was set");
-    set_env("CUDA_HOME", home_c.string());
-    expect_home(home_c, "CUDA_HOME must win over CUDA_PATH");
-    expect_home(home_b, "MACA_PATH must win over the CUDA_* pair");
+    // The install root, still set from the MACA_CLANG_PATH case above.
+    expect_home(home_b, "MACA_PATH was not used");
 
     // A home that is set but does not exist is an error, not a reason to try
     // the next name down: a typo must not silently select a different install.
     set_env("MACA_PATH", (cache_root / "missing_home").string());
     expect_failure([&] { (void)deep_jit::MACA::find_maca_toolkit(env); },
                    "MACA toolkit home was not found");
+    unset_env("MACA_PATH");
 
     // `mxcc` on PATH is the last rung before the built-in default.  The
     // system dirs stay on PATH so the `which` probe itself still resolves.
-    unset_env("MACA_PATH");
-    unset_env("CUDA_HOME");
-    unset_env("CUDA_PATH");
     set_env("PATH", path_bin.string() + ":/usr/bin:/bin");
     expect_mxcc(fs::canonical(path_bin / "mxcc"), "mxcc on PATH was not used");
 
     if (fs::exists("/opt/maca")) {
-        // PATH with no mxcc anywhere lets discovery fall through to the
-        // built-in default.
+        // An empty PATH leaves the `which` probe with nothing to find, so
+        // discovery falls to the built-in default.  Do not keep /usr/bin
+        // here: some installs link mxcc into it, and then the PATH rung
+        // answers and the default is never reached.
         const auto empty_bin = cache_root / "empty_bin";
         deep_jit::make_dirs(empty_bin);
-        set_env("PATH", empty_bin.string() + ":/usr/bin:/bin");
+        set_env("PATH", empty_bin.string());
         expect_home("/opt/maca", "the built-in /opt/maca fallback was not used");
     }
 
@@ -1476,7 +1474,7 @@ void test_generated_include_graph(const fs::path& cache_root) {
         deep_jit::make_dirs(root / "test_maca");
 
     const auto dependency = [](const int value) {
-        return std::format("constexpr int kTrackedDependency = {};\n", value);
+        return fmt::format("constexpr int kTrackedDependency = {};\n", value);
     };
     deep_jit::write_file_sync(root_a / "test_maca/tracked_dependency.cu", dependency(1));
     deep_jit::write_file_sync(root_b / "test_maca/tracked_dependency.cu", dependency(1));
@@ -1576,12 +1574,15 @@ void test_secondary_disk_cache(const fs::path& cache_root) {
 
     // A lookup root may be read-only: replace its commit marker with a
     // symlink whose mtime cannot be updated and check that the hit still
-    // resolves instead of turning into a miss or an error.
+    // resolves instead of turning into a miss or an error.  Root can update
+    // the timestamps of a `/proc` entry, so that premise is not testable
+    // there; the lookup half below is independent of it and still runs.
     const auto commit_path = expected_artifact / deep_jit::kCommitFileName;
     DJ_HOST_ASSERT(fs::remove(commit_path));
     fs::create_symlink("/proc/version", commit_path);
-    DJ_HOST_ASSERT(not deep_jit::try_update_mtime(commit_path),
-                   "read-only secondary cache marker unexpectedly allowed an mtime update");
+    if (deep_jit::try_update_mtime(commit_path))
+        std::printf("  [  NOTE   ] running as root: the read-only marker allowed an mtime "
+                    "update, so the read-only secondary cache path is not exercised\n");
 
     set_env("SECONDARY_LOOKUP_JIT_CACHE_DIR", primary_cache.string() + ":" + secondary_cache.string());
     const auto runtime = make_runtime_with_prefix("SECONDARY_LOOKUP", include_dir);
@@ -2070,7 +2071,7 @@ void test_cache_key_option_matrix(Runtime& runtime) {
     randomized_keys.reserve(5000);
     std::mt19937_64 generator(0x741bc92du);
     for (int index = 0; index < 5000; ++index) {
-        const auto randomized_source = source + std::format("\n// {} {}\n", index, generator());
+        const auto randomized_source = source + fmt::format("\n// {} {}\n", index, generator());
         DJ_HOST_ASSERT(randomized_keys.emplace(
                            runtime.cache_key(randomized_source, runtime.default_compiler_options)).second,
                        "randomized cache key collision at input {}", index);
@@ -2477,11 +2478,13 @@ void test_template_hash_and_launch(Runtime& runtime) {
                    "changed template argument was not compiled");
 }
 
-void test_cooperative_launch(Runtime& runtime) {
+bool test_cooperative_launch(Runtime& runtime) {
     constexpr unsigned int num_blocks = 2;
-    // A 1<<20-block grid can never co-reside, so the same grid is accepted
-    // plainly and refused cooperatively on any device.  A backend that
-    // dropped the attribute would fail this case.
+    // A 1<<20-block grid can never co-reside, so a driver that enforces the
+    // cooperative contract accepts it plainly and refuses it cooperatively.
+    // A driver that accepts both leaves nothing to observe -- the test then
+    // reports a skip rather than a pass, because a backend that dropped the
+    // attribute would look identical.
     constexpr unsigned int oversized_blocks = 1u << 20;
     const auto kernel = runtime.compile("cooperative_probe", get_source("cooperative_probe.cu"));
 
@@ -2521,13 +2524,21 @@ void test_cooperative_launch(Runtime& runtime) {
 
         // ... and refused on the cooperative path, by the driver, with its
         // cooperative-specific error (`mcErrorCooperativeLaunchTooLarge`).
-        // The message is the driver's, so only the keyword is asserted.
-        expect_failure(
-            [&] { launch_and_read(true, oversized_blocks); },
-            "cooperative");
+        // The message is the driver's, so only the keyword is asserted.  Some
+        // MACA driver generations accept the oversized grid and run it in
+        // waves instead; that is a skip, not a pass.
+        bool refused = false;
+        try {
+            launch_and_read(true, oversized_blocks);
+        } catch (const std::exception& exception) {
+            DJ_HOST_ASSERT(std::string_view(exception.what()).find("cooperative") != std::string_view::npos,
+                           "unexpected exception: {}", exception.what());
+            refused = true;
+        }
 
         DJ_MACA_RUNTIME_CHECK(mcFree(output));
         output = nullptr;
+        return refused;
     } catch (...) {
         if (output != nullptr)
             mcFree(output);
@@ -2627,7 +2638,7 @@ void test_backend_output_validation(Runtime& runtime, const fs::path& cache_root
     make_fake_toolkit_dir(tool_dir, runtime.backend.toolkit.llvm_nm);
 
     const auto real_mxcc = runtime.backend.toolkit.mxcc;
-    const auto recovery_body = std::format("exec {} \"$@\"\n", real_mxcc.string());
+    const auto recovery_body = fmt::format("exec {} \"$@\"\n", real_mxcc.string());
     const std::string version_body = "if [ \"$1\" = \"--version\" ]; then\n"
                                      "  printf '%s\\n' 'mxcc version 1.0.0 (d9102a1572)'\n"
                                      "  exit 0\n"
@@ -2753,7 +2764,7 @@ void test_backend_output_validation(Runtime& runtime, const fs::path& cache_root
     const auto effective_metadata_options =
         metadata_runtime->default_compiler_options.override_with(metadata_options);
     const auto metadata_artifact = metadata_cache / "cache" /
-        std::format("metadata_failure.{}", metadata_runtime->cache_key(source, effective_metadata_options));
+        fmt::format("metadata_failure.{}", metadata_runtime->cache_key(source, effective_metadata_options));
     expect_failure(
         [&] { metadata_runtime->compile_without_load("metadata_failure", source, metadata_options); },
         "failed to open for writing");
@@ -2919,7 +2930,7 @@ int main(int argc, char** argv) {
     run_test("launch options override", [&] { test_launch_options_override(*runtime); });
     run_test("launch option validation", [&] { test_launch_option_validation(*runtime); });
     run_test("multidimensional launch", [&] { test_multidimensional_launch(*runtime); });
-    run_test("cooperative launch", [&] { test_cooperative_launch(*runtime); });
+    run_test("cooperative launch", [&] { return test_cooperative_launch(*runtime); });
     run_test("JIT round trip", [&] { test_jit_round_trip(*runtime); });
     run_test("JIT vector add", [&] { test_jit_vector_add(*runtime); });
     run_test("template hash and runtime arguments", [&] { test_template_hash_and_launch(*runtime); });
