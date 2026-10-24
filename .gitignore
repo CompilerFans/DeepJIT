@@ -1,7 +1,6 @@
 .clangd
 .idea
 .vscode/
-.omc
 build/
 cmake-build-*/
 *.so

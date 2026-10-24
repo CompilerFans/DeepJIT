@@ -1,3 +1,4 @@
+// Copyright (c) 2026 MetaX Integrated Circuits (Shanghai) Co., Ltd. All rights reserved.
 extern "C" __global__ void multidimensional_launch_kernel(int* output) {
     const int block_index = static_cast<int>(
         blockIdx.x + gridDim.x * (blockIdx.y + gridDim.y * blockIdx.z));

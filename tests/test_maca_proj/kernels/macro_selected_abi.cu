@@ -1,3 +1,4 @@
+// Copyright (c) 2026 MetaX Integrated Circuits (Shanghai) Co., Ltd. All rights reserved.
 #if TEST_INDEX_BITS == 32
 using test_index_t = int;
 #elif TEST_INDEX_BITS == 64

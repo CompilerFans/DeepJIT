@@ -1,6 +1,6 @@
+// Copyright (c) 2026 MetaX Integrated Circuits (Shanghai) Co., Ltd. All rights reserved.
 // Large parameter block: 1 KiB by value, eighteen 128-byte opaque arguments,
-// then an indirect payload and a null pointer.  Keep the fold inline: copying
-// into a local array exceeds the per-thread private-memory limit.
+// an indirect payload, and a null pointer. Keep the fold inline (private limit).
 struct OpaqueArgument {
     unsigned char bytes[128];
 };

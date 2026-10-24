@@ -1,3 +1,4 @@
+// Copyright (c) 2026 MetaX Integrated Circuits (Shanghai) Co., Ltd. All rights reserved.
 // Kernel-argument ABI: mixed scalar widths, including a 1-byte `bool`, plus a
 // pointer also passed through `NoRefPtr`.  All terms are exact in binary32.
 extern "C" __global__ void mixed_arguments_kernel(float* output,

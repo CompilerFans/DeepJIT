@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 MetaX Integrated Circuits (Shanghai) Co., Ltd. All rights reserved.
 # Build the MACA test harness.  Device-side compilation is done by mxcc at run
 # time; this only builds the host binary.
 set -euo pipefail
@@ -25,9 +26,8 @@ done
 
 mkdir -p "$(dirname "$OUT")"
 
-# `-DUSE_MACA` is required by the platform's PyTorch headers.  No `-pthread`:
-# mxcc's option table does not carry it, and this glibc links pthread into libc
-# anyway.
+# `-DUSE_MACA` is required by the platform's PyTorch headers. No `-pthread`:
+# mxcc's option table lacks it, and this glibc links pthread into libc.
 "$CXX" "$ROOT/tests/test_maca_proj/main.cpp" -o "$OUT" \
   -std=c++20 -O2 -DUSE_MACA -D_GNU_SOURCE \
   -I"$ROOT/include" -I"$FMT_ROOT/include" \

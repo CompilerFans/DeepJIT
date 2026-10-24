@@ -1,3 +1,4 @@
+// Copyright (c) 2026 MetaX Integrated Circuits (Shanghai) Co., Ltd. All rights reserved.
 #pragma once
 
 #include <mc_runtime.h>
@@ -18,12 +19,8 @@ DJ_DECL_LAZY_DL_FUNCTION(get_maca_handle, mcModuleUnload);
 DJ_DECL_LAZY_DL_FUNCTION(get_maca_handle, mcModuleGetFunction);
 DJ_DECL_LAZY_DL_FUNCTION(get_maca_handle, mcModuleLaunchKernelEx);
 
-// No attribute binding: the launch enforces the shared-memory ceiling, and
-// the native `mcFuncSetAttribute` rejects a module-loaded kernel.  Kernel
-// names come from `llvm-nm` because MACA has no driver-side enumeration, and
-// libmcruntime.so has no TensorMap entry point.  `mcModuleLaunchKernelEx` is
-// the module-level launch entry; the stub-based `mcLaunchKernelExC` rejects a
-// `mcFunction_t`.
+// `mcModuleLaunchKernelEx` is the module-level entry; `mcLaunchKernelExC`
+// rejects `mcFunction_t`. No attribute or TensorMap entry point exists.
 
 inline void check_maca_driver(const mcError_t error, const char* expression) {
     if (error == mcSuccess)

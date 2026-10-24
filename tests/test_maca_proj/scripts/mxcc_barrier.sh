@@ -1,7 +1,7 @@
 #!/bin/sh
-# Stand-in for `mxcc` that parks the JIT inside the compiler step so a test
-# can kill it before publication.  `--version` always passes through to keep
-# the cache key identical; without the block variable it is a pass-through.
+# Copyright (c) 2026 MetaX Integrated Circuits (Shanghai) Co., Ltd. All rights reserved.
+# Stand-in for `mxcc` that parks the JIT inside compilation so a test can kill
+# it. `--version` passes through to keep the cache key identical.
 real="${DEEP_JIT_MACA_TEST_REAL_MXCC:?the real mxcc must be named}"
 
 case " $* " in

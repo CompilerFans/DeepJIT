@@ -1,3 +1,4 @@
+// 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 #pragma once
 
 #include <memory>
@@ -40,11 +41,8 @@ inline std::shared_ptr<Runtime<Backend>> unwrap_runtime_handle(const tvm::ffi::A
 
 }  // namespace deep_jit
 
-// Export `get_jit` from the DSO that owns `jit`, a namespace-scope LazyInit.
-// Invoke exactly once per library, at global scope (outside any namespace).
-// The wrapper tvm-ffi generates leaves its `self` parameter unused, so the
-// expansion is wrapped in a diagnostic guard for consumers that build with
-// -Werror without treating tvm-ffi as a system include.
+// Export `get_jit` from the DSO owning `jit`, once per library at global
+// scope. The diagnostic guard silences the generated wrapper's unused `self`.
 #define DJ_EXPORT_GET_JIT(jit)                                            \
     _Pragma("GCC diagnostic push")                                        \
     _Pragma("GCC diagnostic ignored \"-Wunused-parameter\"")              \

@@ -1,4 +1,5 @@
-# Debug/IDE-only build; consumers integrate DeepJIT by include path.
+# 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
+# NOTES: this CMake is only for debugging/IDE indexing; consumers integrate by include path.
 cmake_minimum_required(VERSION 3.20)
 project(deep_jit LANGUAGES CXX)
 set(CMAKE_VERBOSE_MAKEFILE ON)
@@ -18,9 +19,8 @@ set(DEEP_JIT_TOOLKIT_INCLUDE_DIRS
 set(DEEP_JIT_TOOLKIT_LIBRARY_DIRS "${MACA_PATH}/lib")
 set(DEEP_JIT_TOOLKIT_LIBRARIES mcruntime)
 
-# fmt is used header-only because `<format>` is unavailable on some host
-# toolchains (e.g. the GCC 11 libstdc++ behind mxcc); see utils/format.hpp.
-# Defaults to a sibling checkout, as vendored by the consuming repositories.
+# fmt is header-only: `<format>` is unavailable on some host toolchains behind
+# mxcc. Defaults to a sibling checkout; see utils/format.hpp.
 set(DEEP_JIT_FMT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../fmt" CACHE PATH "Root of an fmt checkout")
 
 # TVM FFI ships its CMake config inside the Python package; the CLI probe does

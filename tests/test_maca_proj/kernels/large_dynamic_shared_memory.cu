@@ -1,3 +1,4 @@
+// Copyright (c) 2026 MetaX Integrated Circuits (Shanghai) Co., Ltd. All rights reserved.
 // Uses more dynamic shared memory than the default per-block limit, so the
 // launch only succeeds when the shared-memory ceiling attribute was applied.
 extern "C" __global__ void large_smem_kernel(int* output, const int input) {

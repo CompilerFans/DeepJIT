@@ -1,3 +1,4 @@
+// Copyright (c) 2026 MetaX Integrated Circuits (Shanghai) Co., Ltd. All rights reserved.
 #pragma once
 
 #include <cstdio>
@@ -188,12 +189,8 @@ public:
     }
 
     static Toolkit find_maca_toolkit(const Env& env) {
-        // Order: JIT_MXCC_COMPILER, MACA_CLANG_PATH, MACA_PATH, `mxcc` on
-        // PATH, /opt/maca.  MACA_HOME and the CUDA_* pair are not consulted:
-        // this backend is MACA-only, and in this ecosystem CUDA_HOME /
-        // CUDA_PATH name the cu-bridge root -- a subdirectory with no
-        // mxgpu_llvm/ -- so as an install root they could only turn
-        // "MACA_PATH unset" into a hard error instead of falling through.
+        // Order: JIT_MXCC_COMPILER, MACA_CLANG_PATH, MACA_PATH, PATH, /opt/maca;
+        // MACA_HOME and CUDA_HOME/CUDA_PATH (the cu-bridge root) are unused.
         std::filesystem::path mxcc;
         if (const auto path = env.get<std::string>("JIT_MXCC_COMPILER"); path and not path->empty()) {
             mxcc = std::filesystem::absolute(*path).lexically_normal();

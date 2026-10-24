@@ -1,3 +1,4 @@
+// 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 #pragma once
 
 #include <elfutils/libdwfl.h>
@@ -9,6 +10,7 @@
 #include <dlfcn.h>
 #include <exception>
 #include <execinfo.h>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unistd.h>
@@ -125,6 +127,8 @@ inline std::string demangle(const char* name) {
 template <std::size_t num_frames_to_skip = 0>
 inline __attribute__((noinline)) std::string get_backtrace() {
     static DwflApi api;
+    static std::mutex mutex;
+    const std::lock_guard lock(mutex);
     api.refresh();
 
     constexpr int max_num_frames = 16;

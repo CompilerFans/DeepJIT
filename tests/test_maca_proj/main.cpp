@@ -1,3 +1,4 @@
+// Copyright (c) 2026 MetaX Integrated Circuits (Shanghai) Co., Ltd. All rights reserved.
 // Standalone MACA test harness: compiles kernels with mxcc at run time and
 // drives them through the DeepJIT runtime.
 #include <algorithm>
@@ -231,9 +232,8 @@ fs::path get_cache_root() {
     return fs::path(value == nullptr ? "/tmp/deep_jit_maca_test" : value);
 }
 
-// Publish one `DiskCache` entry behind a file barrier; several processes run
-// this concurrently and must agree on one published directory.  No compiler
-// or device is involved.
+// Publish one `DiskCache` entry behind a file barrier; concurrent writers must
+// agree on one directory. No compiler or device is involved.
 int run_publish_once(const std::string& cache_root, const std::string& owner,
                      const fs::path& ready_path, const fs::path& start_path) {
     try {
@@ -443,12 +443,8 @@ void test_toolkit_discovery(const fs::path& cache_root) {
         "mxcc compiler is not executable");
     unset_env("INVALID_TOOLKIT_JIT_MXCC_COMPILER");
 
-    // Discovery order: MACA_CLANG_PATH > MACA_PATH > PATH > /opt/maca.  These
-    // names are unprefixed, MACA_HOME and the CUDA_* pair are unused, so the
-    // test drives and restores the raw environment.  CUDA_HOME/CUDA_PATH are
-    // deliberately absent from the ladder: in this ecosystem they name the
-    // cu-bridge root, which has no mxgpu_llvm/, so as an install root they
-    // could only fail.
+    // Order: MACA_CLANG_PATH, MACA_PATH, PATH, /opt/maca. The names are
+    // unprefixed; MACA_HOME and CUDA_HOME/CUDA_PATH (the cu-bridge) are unused.
     const std::array<std::string, 3> discovery_names = {"MACA_CLANG_PATH", "MACA_PATH", "PATH"};
     std::array<std::optional<std::string>, 3> saved_discovery;
     for (std::size_t index = 0; index < discovery_names.size(); ++index)
@@ -516,10 +512,8 @@ void test_toolkit_discovery(const fs::path& cache_root) {
     expect_mxcc(fs::canonical(path_bin / "mxcc"), "mxcc on PATH was not used");
 
     if (fs::exists("/opt/maca")) {
-        // An empty PATH leaves the `which` probe with nothing to find, so
-        // discovery falls to the built-in default.  Do not keep /usr/bin
-        // here: some installs link mxcc into it, and then the PATH rung
-        // answers and the default is never reached.
+        // An empty PATH tests the built-in default. Do not keep /usr/bin:
+        // some installs link mxcc there, so the PATH rung would answer.
         const auto empty_bin = cache_root / "empty_bin";
         deep_jit::make_dirs(empty_bin);
         set_env("PATH", empty_bin.string());
@@ -962,9 +956,8 @@ void test_parser(const fs::path& cache_root) {
     DJ_HOST_ASSERT(parser.parse_into_hash(source) != changed.parse_into_hash(source),
                    "changed include contents must change the hash");
 
-    // A cycle must be refused, and refused without leaving the visited set
-    // dirty -- a stale entry there would make the NEXT parse of the same
-    // source silently take the already-visited branch.
+    // A cycle must be refused without leaving stale visited state for the
+    // next parse.
     const auto cycle_dir = get_test_maca_project_dir() / "include_cycle";
     deep_jit::Parser cycle_parser({cycle_dir}, {"test_maca/"});
     expect_failure([&] { cycle_parser.parse_into_hash("#include <test_maca/circular_include_entry.hpp>\n"); },
@@ -1274,9 +1267,8 @@ void test_lazy_init() {
     expect_failure([&] { (void)retry.get(); }, "initialization failed");
     DJ_HOST_ASSERT(retry->value == 41 and num_attempts == 2, "lazy initialization did not recover after an exception");
 
-    // Creating a lazy runtime must not discover the toolchain, read the
-    // environment or construct the runtime: the invalid cache-root list is
-    // only observed on first use.
+    // Lazy construction must not discover the toolkit or read the environment;
+    // the invalid cache root is observed on first use.
     set_env("LAZY_JIT_CACHE_DIR", "first::second");
     auto lazy_jit = deep_jit::create_lazy_jit<deep_jit::MACA>(deep_jit::Config(
         get_test_maca_project_dir(), "LAZY", "maca-test-signature",
@@ -1313,9 +1305,8 @@ void test_mixed_arguments(Runtime& runtime) {
     DJ_MACA_RUNTIME_CHECK(mcMemcpy(&result, device_output, sizeof(float), mcMemcpyDeviceToHost));
     DJ_HOST_ASSERT(result == 384.75f, "mixed kernel arguments produced the wrong value: {}", result);
 
-    // `NoRefPtr` hands the driver the pointer itself as argument storage.
-    // Here it only proves the wrapper is accepted; the wider-argument case is
-    // covered by `large kernel arguments`.
+    // `NoRefPtr` passes the pointer itself as argument storage; the wider case
+    // is covered by `large kernel arguments`.
     int* input_argument = device_input;
     runtime.launch(kernel, {.grid_dim = dim3(1, 1, 1), .block_dim = dim3(1, 1, 1)},
                    device_output, 1, 2.5f, 4.25, static_cast<long long>(8), static_cast<short>(16),
@@ -1334,9 +1325,8 @@ void test_resource_usage_checks(Runtime& runtime) {
     const CompilerOptions local_memory_check {.check_no_local_memory = true};
     const CompilerOptions both_checks {.check_no_spills = true, .check_no_local_memory = true};
 
-    // mxcc only reports "N bytes stack frame" under `-resource-usage`, so a
-    // check that validates that report has to request it; otherwise it would
-    // silently pass on a kernel that spills.
+    // The stack-frame report only exists under `-resource-usage`, so a check
+    // that validates it must request it.
     const std::vector<std::string> expected = {
         "--offload-arch=xcore" + *runtime.default_compiler_options.arch,
         "-O3",
@@ -1572,11 +1562,8 @@ void test_secondary_disk_cache(const fs::path& cache_root) {
     const auto expected_artifact = source_runtime->compile_without_load("template_add", source);
     unset_env("SECONDARY_SOURCE_JIT_CACHE_DIR");
 
-    // A lookup root may be read-only: replace its commit marker with a
-    // symlink whose mtime cannot be updated and check that the hit still
-    // resolves instead of turning into a miss or an error.  Root can update
-    // the timestamps of a `/proc` entry, so that premise is not testable
-    // there; the lookup half below is independent of it and still runs.
+    // A read-only lookup root must still hit when its marker's mtime cannot be
+    // updated. Root can update `/proc` timestamps; the lookup half still runs.
     const auto commit_path = expected_artifact / deep_jit::kCommitFileName;
     DJ_HOST_ASSERT(fs::remove(commit_path));
     fs::create_symlink("/proc/version", commit_path);
@@ -1602,9 +1589,8 @@ void test_architecture_override(Runtime& runtime) {
     DJ_HOST_ASSERT(launch_value(runtime, runtime.compile("arch_override", source), 1) == 39,
                    "a kernel compiled for the discovered architecture did not launch");
 
-    // A cross-family offload target must reach mxcc and select a distinct
-    // entry.  The artifact is deliberately not loaded: a binary built for
-    // another xcore family cannot run on this device.
+    // A cross-family target must reach mxcc and select a distinct entry. It is
+    // not loaded: a binary for another xcore family cannot run here.
     const auto other_arch = default_arch == "1000" ? std::string("1600") : std::string("1000");
     const CompilerOptions options {.arch = other_arch};
     const auto artifact = runtime.compile_without_load("arch_override", source, options);
@@ -1616,8 +1602,7 @@ void test_architecture_override(Runtime& runtime) {
                    "the offload target is missing from the recorded command");
 }
 
-// Every xcore family is a separate offload target, and mxcc can compile for
-// any of them regardless of the installed device.  Only the installed
+// Every xcore family is a separate offload target; only the installed
 // family's artifact can be loaded, so this case stops at compilation.
 void test_cross_family_compilation(Runtime& runtime, const fs::path& cache_root) {
     const std::array<std::string, 3> families = {"1000", "1500", "1600"};
@@ -1682,9 +1667,8 @@ void test_multiple_runtimes(const fs::path& cache_root) {
     DJ_HOST_ASSERT(runtime_b->mem_cache.cache.empty(), "one runtime populated another runtime's memory cache");
     DJ_HOST_ASSERT(launch_value(*runtime_b, runtime_b->compile("runtime_isolation", source)) == 29);
 
-    // The toolkit is resolved per load: runtime B gets an `llvm-nm` that
-    // records that it ran, and is constructed last, so a process-global set
-    // by the constructor would be caught here.
+    // The toolkit is resolved per load: runtime B's `llvm-nm` records that it
+    // ran, and B is constructed last, catching any process-global.
     const auto toolkit_marker = cache_root / "runtime_b_llvm_nm_ran";
     const auto llvm_nm_shim = cache_root / "llvm_nm_shim";
     write_executable(llvm_nm_shim,
@@ -1709,9 +1693,8 @@ void test_multiple_runtimes(const fs::path& cache_root) {
     DJ_HOST_ASSERT(fs::exists(toolkit_marker), "runtime B did not use its own llvm-nm");
     unset_env("RUNTIME_B_JIT_LLVM_NM");
 
-    // Two runtimes over the same root share the disk cache but not the memory
-    // cache, and the process environment is re-read rather than snapshotted
-    // for anything but the runtime's own construction-time settings.
+    // Two runtimes over one root share the disk cache but not the memory
+    // cache; the process environment is re-read after construction.
     const auto shared_cache = cache_root / "shared_runtime";
     set_env("SHARED_RUNTIME_JIT_CACHE_DIR", shared_cache.string());
     const auto shared_a = make_runtime_with_prefix("SHARED_RUNTIME", include_dir);
@@ -2087,9 +2070,8 @@ void test_include_dirs(const fs::path& cache_root) {
     const auto runtime_original = make_runtime(include_original);
     const auto runtime_same_content = make_runtime(include_same_content);
     const auto runtime_changed_content = make_runtime(include_changed_content);
-    // The difference sits one level down: the root headers are byte-identical,
-    // so only a recursive parse can change the digest.  `launch_value` below
-    // witnesses the same descent on the compiler side.
+    // The root headers are byte-identical, so only the recursive parse can
+    // change the digest; `launch_value` covers the compiler side.
     DJ_HOST_ASSERT(deep_jit::read(include_original / "test_maca/tracked_include_value.hpp") ==
                        deep_jit::read(include_changed_content / "test_maca/tracked_include_value.hpp"),
                    "the tracked include fixture must differ below the root header, not in it");
@@ -2352,9 +2334,8 @@ void test_library_environment_compatibility(Runtime& runtime, const fs::path& ca
     DJ_HOST_ASSERT(deep_jit::DiskCache::from_env(deep_jit::Env("DG")).paths == std::vector<fs::path>{dg_cache});
     DJ_HOST_ASSERT(deep_jit::DiskCache::from_env(deep_jit::Env("EP")).paths == std::vector<fs::path>{ep_cache});
 
-    // A library-prefixed compiler override is selected ahead of the discovered
-    // toolkit.  `llvm-nm` is resolved next to the selected mxcc, so the stand-in
-    // toolchain has to carry one too.
+    // A library-prefixed mxcc wins over the discovered toolkit; `llvm-nm` is
+    // resolved next to it, so the stand-in carries one too.
     const auto compiler_override_dir = cache_root / "compiler_override";
     const auto compiler_override_cache = compiler_override_dir / "cache_root";
     const auto compiler_override = compiler_override_dir / "valid_mxcc";
@@ -2480,11 +2461,8 @@ void test_template_hash_and_launch(Runtime& runtime) {
 
 bool test_cooperative_launch(Runtime& runtime) {
     constexpr unsigned int num_blocks = 2;
-    // A 1<<20-block grid can never co-reside, so a driver that enforces the
-    // cooperative contract accepts it plainly and refuses it cooperatively.
-    // A driver that accepts both leaves nothing to observe -- the test then
-    // reports a skip rather than a pass, because a backend that dropped the
-    // attribute would look identical.
+    // A 1<<20-block grid cannot co-reside: a conforming driver accepts it
+    // plainly and refuses it cooperatively; if it accepts both, the case skips.
     constexpr unsigned int oversized_blocks = 1u << 20;
     const auto kernel = runtime.compile("cooperative_probe", get_source("cooperative_probe.cu"));
 
@@ -2522,11 +2500,8 @@ bool test_cooperative_launch(Runtime& runtime) {
         DJ_HOST_ASSERT(launch_and_read(false, oversized_blocks) == static_cast<int>(oversized_blocks),
                        "the oversized grid did not run on the plain path");
 
-        // ... and refused on the cooperative path, by the driver, with its
-        // cooperative-specific error (`mcErrorCooperativeLaunchTooLarge`).
-        // The message is the driver's, so only the keyword is asserted.  Some
-        // MACA driver generations accept the oversized grid and run it in
-        // waves instead; that is a skip, not a pass.
+        // ... and refused cooperatively with the driver's error; some MACA
+        // generations run it in waves instead, which is a skip, not a pass.
         bool refused = false;
         try {
             launch_and_read(true, oversized_blocks);
@@ -2615,9 +2590,8 @@ void test_large_kernel_arguments(Runtime& runtime) {
     }
 }
 
-// A stand-in mxcc that reports a version but never runs the real compiler's
-// job: each scenario below fails at a different point in the compile, and each
-// one must leave the cache untouched.
+// A stand-in mxcc that reports a version but fails at a chosen compile step;
+// every scenario below must leave the cache untouched.
 void write_fake_mxcc(const fs::path& path, const std::string& body) {
     write_executable(path, "#!/bin/sh\n" + body);
 }
@@ -2742,9 +2716,8 @@ void test_backend_output_validation(Runtime& runtime, const fs::path& cache_root
     unset_env("NO_ASM_JIT_CACHE_DIR");
     unset_env("NO_ASM_JIT_MXCC_COMPILER");
 
-    // 5. The artifact directory is written in order, and a failure while
-    //    writing metadata must not publish the entry.  The hook runs before
-    //    the metadata is written, so it can occupy the metadata path.
+    // 5. A failure while writing metadata must not publish the entry; the hook
+    //    runs first and occupies the metadata path.
     const auto metadata_hook_root = tool_dir / "metadata_hook_root";
     const auto metadata_hook_path = metadata_hook_root / "hooks/metadata_conflict.py";
     const auto metadata_cache = cache_root / "metadata_failure";

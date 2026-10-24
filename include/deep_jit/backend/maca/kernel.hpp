@@ -1,3 +1,4 @@
+// Copyright (c) 2026 MetaX Integrated Circuits (Shanghai) Co., Ltd. All rights reserved.
 #pragma once
 
 #include <array>
@@ -48,9 +49,8 @@ public:
     Kernel(Kernel&&) = delete;
     Kernel& operator=(Kernel&&) = delete;
 
-    // MACA has no driver-side kernel enumeration, so the entry point is
-    // recovered from the device binary with `llvm-nm`; toolchain bookkeeping
-    // and runtime stubs are filtered out.
+    // No driver-side enumeration: recover the entry point with `llvm-nm`,
+    // filtering toolchain bookkeeping and runtime stubs.
     static std::vector<std::string> parse_kernel_names(const std::filesystem::path& llvm_nm,
                                                        const std::filesystem::path& path) {
         const auto output = call_external_command(
@@ -157,13 +157,8 @@ public:
         DJ_HOST_ASSERT(launch_options.cluster_dim->y == 1 and launch_options.cluster_dim->z == 1,
                        "only one-dimensional MACA clusters are supported");
 
-        // The launch enforces the `sharedMemPerBlockOptin` ceiling itself, so
-        // no maximum-dynamic-shared-memory attribute call is needed or
-        // available for a module-loaded kernel.
-
-        // Only the cooperative attribute is accepted; cluster launch and PDL
-        // are rejected up front rather than failing with an opaque driver
-        // error.  `nonportable_cluster_size_allowed` has no MACA counterpart.
+        // The launch enforces `sharedMemPerBlockOptin` itself; only the
+        // cooperative attribute is accepted. Cluster launch and PDL are rejected.
         DJ_HOST_ASSERT(launch_options.cluster_dim->x == 1,
                        "MACA does not support cluster launch (mcErrorInvalidConfiguration)");
         DJ_HOST_ASSERT(not *launch_options.enable_pdl,

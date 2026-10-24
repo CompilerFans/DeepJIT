@@ -1,6 +1,6 @@
-// Keeps a per-thread array alive across two loops, so the array cannot be
-// promoted to registers and mxcc has to place it in the stack frame.  The
-// `check_no_spills` / `check_no_local_memory` options must reject it.
+// Copyright (c) 2026 MetaX Integrated Circuits (Shanghai) Co., Ltd. All rights reserved.
+// Keeps a per-thread array alive across loops so mxcc must place it in the
+// stack frame; both resource checks must reject it.
 extern "C" __global__ void local_frame_kernel(float* output, const float* input, const int size) {
     float buffer[2048];
     for (int index = 0; index < 2048; ++index)

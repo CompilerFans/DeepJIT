@@ -1,8 +1,6 @@
-"""DeepJIT MACA backend end-to-end test.
-
-Run with the MACA environment sourced: MACA_PATH and LD_LIBRARY_PATH must
-include `$MACA_PATH/lib` and `$MACA_PATH/mxgpu_llvm/lib`.
-"""
+# Copyright (c) 2026 MetaX Integrated Circuits (Shanghai) Co., Ltd. All rights reserved.
+"""DeepJIT MACA backend end-to-end test. Source the MACA environment first:
+`LD_LIBRARY_PATH` must include `$MACA_PATH/lib` and `$MACA_PATH/mxgpu_llvm/lib`."""
 import json
 import os
 import shutil
@@ -23,9 +21,8 @@ if not __debug__:
 
 ROOT = Path(__file__).resolve().parent.parent
 TEST_MACA_PROJECT = ROOT / 'tests' / 'test_maca_proj'
-# The cases allowed to report `[ SKIPPED ]`: one needs two devices, the other
-# needs a driver that refuses an oversized cooperative grid (this MACA
-# generation accepts it and runs it in waves).
+# The only cases allowed to skip: one needs two devices, the other a driver
+# that rejects an oversized cooperative grid.
 EXPECTED_SKIPS = {'multiple devices', 'cooperative launch'}
 COMPILER_OPTION_SUFFIXES = (
     'JIT_CHECK_NO_LOCAL_MEMORY',
@@ -48,12 +45,8 @@ def maca_path():
 
 
 def host_compiler():
-    """The host C++ compiler: the MACA SDK's `mxcc`.
-
-    The SDK ships no separate `clang++`; `mxcc` is the clang driver it does
-    ship, and it compiles host C++ as readily as device code.  `MACA_HOST_CXX`
-    or `CXX` overrides it, for a host that wants its own compiler.
-    """
+    """The MACA SDK's `mxcc`, which also compiles host C++.
+    `MACA_HOST_CXX` or `CXX` overrides it."""
     for name in ('MACA_HOST_CXX', 'CXX'):
         value = os.environ.get(name)
         if value:
@@ -72,11 +65,8 @@ def clear_external_jit_environment():
 
 
 def build_harness(temporary_dir):
-    """Build the standalone C++ harness.
-
-    `TORCH_ROOT` is set here because `build.sh` would otherwise shell out to
-    `python`, which need not be on PATH in a non-interactive shell.
-    """
+    """Build the standalone C++ harness. `TORCH_ROOT` avoids build.sh's
+    `python` lookup, which need not be on PATH in a non-interactive shell."""
     output = temporary_dir / 'test_maca'
     environment = dict(os.environ)
     environment.setdefault('TORCH_ROOT', str(Path(torch.__file__).resolve().parent))
@@ -97,9 +87,7 @@ def run_harness(binary, temporary_dir):
     sys.stderr.write(result.stderr)
     assert result.returncode == 0, f'harness failed with exit code {result.returncode}'
 
-    # Account for every registered case.  The success banner is printed no
-    # matter how many cases skipped, so without this a case that silently
-    # started returning false would pass unnoticed.
+    # Account for every registered case: the success banner ignores skips.
     def cases(marker):
         return [line.split(']', 1)[1].strip() for line in result.stdout.splitlines()
                 if line.startswith(marker)]
@@ -164,11 +152,8 @@ def validate_artifacts(cache_root):
 
 
 def validate_header_self_containment(temporary_dir):
-    """Each backend header must compile on its own.
-
-    A missing toolchain is a failure, not a skip: silently dropping this check
-    is how a header stops being self-contained without anyone noticing.
-    """
+    """Each backend header must compile on its own; a missing toolchain is a
+    failure, not a skip."""
     compiler = host_compiler()
     assert compiler.is_file(), f'no host compiler at {compiler}: set MACA_PATH (or CXX)'
     headers = sorted((ROOT / 'include' / 'deep_jit' / 'backend' / 'maca').glob('*.hpp'))
@@ -190,13 +175,9 @@ def fmt_root():
 
 
 def header_self_containment_command(source, output):
-    """The backend headers need the MACA, cu-bridge, torch and fmt include
-    roots; the roots mirror `build.sh`.
-
-    `-fsyntax-only` is not in mxcc's option table, so the check compiles to an
-    object file instead -- the question is the same one (does the header
-    compile alone), and `-Werror` keeps it as strict.
-    """
+    """MACA, cu-bridge, torch and fmt include roots, mirroring build.sh.
+    `-fsyntax-only` is not in mxcc's option table, so compile an object file
+    with `-Werror` instead."""
     torch_root = Path(os.environ.get('TORCH_ROOT') or Path(torch.__file__).resolve().parent)
     maca = maca_path()
 
@@ -204,9 +185,7 @@ def header_self_containment_command(source, output):
         str(host_compiler()), '-c', '-o', str(output), '-std=c++20',
         '-Werror', '-Wno-attributes', '-Wno-deprecated-declarations',
         '-Wno-missing-field-initializers', '-Wno-psabi', '-Wno-unused-function',
-        # Not optional: the platform's PyTorch headers gate on it (ATen's
-        # Context.h has a static_assert(0) in the #else branch) and the
-        # backend's kernel.hpp includes <ATen/cuda/CUDAContext.h>.
+        # Required by the platform's PyTorch headers, which kernel.hpp includes.
         '-DUSE_MACA', '-D_GNU_SOURCE',
     ]
     for path in (
@@ -340,15 +319,9 @@ def validate_multiprocess_compile(binary, temporary_dir):
 
 
 def validate_crashed_disk_cache_writer(binary, temporary_dir):
-    """A writer killed with its artifact staged must publish nothing, and must
-    not stop the next process from publishing the same key.
-
-    The kill lands inside the compiler step by construction: `mxcc` is replaced
-    by `scripts/mxcc_barrier.sh`, which records that it started and then blocks
-    until it is killed.  The run that recovers afterwards uses the same
-    stand-in without the block, so it reports the same compiler version -- and
-    therefore compiles the same cache key the killed process was working on.
-    """
+    """A killed writer must publish nothing and must not block the next
+    writer. `mxcc` is replaced by a blocking stand-in so the kill lands inside
+    the compiler step; recovery uses the same stand-in without the block."""
     cache_root = temporary_dir / 'crashed_disk_cache'
     coordination = temporary_dir / 'crashed_disk_cache_coordination'
     coordination.mkdir()
@@ -367,9 +340,8 @@ def validate_crashed_disk_cache_writer(binary, temporary_dir):
 
     environment = harness_environment(temporary_dir)
     environment['DEEP_JIT_MACA_TEST_CACHE_DIR'] = str(cache_root)
-    # The compiler overrides follow the library prefix (`TEST` is the harness's
-    # own), and `llvm-nm` has to be named because the stand-in does not sit in
-    # a toolkit directory.
+    # Library-prefixed overrides; `llvm-nm` is named because the stand-in is
+    # not in a toolkit directory.
     environment['TEST_JIT_MXCC_COMPILER'] = str(barrier)
     environment['TEST_JIT_LLVM_NM'] = str(llvm_nm)
     environment['DEEP_JIT_MACA_TEST_REAL_MXCC'] = str(real_mxcc)
@@ -428,14 +400,8 @@ def validate_crashed_disk_cache_writer(binary, temporary_dir):
 
 
 def validate_direct_disk_cache_publication(binary, temporary_dir):
-    """Eight processes stage the same entry and commit at once.
-
-    The `--compile-once` case races the whole compile, so it can only see the
-    end point.  This case drives `DiskCache` directly -- no compiler, no device
-    -- so the entry is still uncommitted when every writer is parked at the
-    barrier; that is what proves the entry is invisible until `commit()` and
-    that one writer's published directory is not mixed with another's files.
-    """
+    """Eight processes stage the same entry and commit at once; driving
+    `DiskCache` directly proves it stays invisible until one publishes it."""
     cache_root = temporary_dir / 'direct_disk_cache'
     coordination = temporary_dir / 'direct_disk_cache_coordination'
     coordination.mkdir()

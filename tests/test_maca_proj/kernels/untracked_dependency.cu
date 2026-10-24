@@ -1,6 +1,6 @@
-// `third_party/` is not one of the configured include prefixes, so the parser
-// ignores this dependency; only the `-I` flag that points at it (and therefore
-// the compiler-option hash) distinguishes one checkout of it from another.
+// Copyright (c) 2026 MetaX Integrated Circuits (Shanghai) Co., Ltd. All rights reserved.
+// `third_party/` is not a configured include prefix, so the parser ignores it;
+// only the `-I` flag (and the compiler-option hash) distinguishes checkouts.
 #include <third_party/dependency_value.cuh>
 
 extern "C" __global__ void untracked_dependency_kernel(int* output, const int input) {

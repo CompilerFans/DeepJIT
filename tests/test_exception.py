@@ -1,3 +1,4 @@
+# 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 import os
 import sys
 import tempfile
@@ -17,15 +18,8 @@ def tvm_ffi_paths():
 
 
 def extra_include_paths():
-    """Include roots the embedded headers need beyond this repository's own.
-
-    `deep_jit/utils/exception.hpp` includes `<elfutils/libdwfl.h>`, from the
-    platform's libdw, and the headers format through the vendored fmt checkout
-    (`FMT_ROOT`, a sibling by default) rather than `<format>`.  libdw's root is
-    not on every host's default search path -- a system libdw-dev carries it,
-    a MACA install may -- so it is located rather than assumed, and added only
-    when found.
-    """
+    """Include roots needed beyond this repository: fmt, and libdw if the
+    MACA install provides it (`exception.hpp` includes `<elfutils/libdwfl.h>`)."""
     maca = Path(os.environ.get('MACA_PATH') or '/opt/maca')
     fmt = Path(os.environ.get('FMT_ROOT') or ROOT.parent / 'fmt') / 'include'
     assert (fmt / 'fmt/format.h').is_file(), f'no fmt checkout at {fmt.parent}: set FMT_ROOT'

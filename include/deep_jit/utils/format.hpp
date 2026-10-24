@@ -1,8 +1,8 @@
+// Copyright (c) 2026 MetaX Integrated Circuits (Shanghai) Co., Ltd. All rights reserved.
 #pragma once
 
-// Use fmt instead of `<format>`: some host toolchains (notably the GCC 11
-// libstdc++ behind MACA's mxcc) predate it.  Header-only; consumers supply the
-// include path.
+// fmt replaces `<format>` for host toolchains that predate it.
+// Consumers supply the fmt include path.
 #ifndef FMT_HEADER_ONLY
 #define FMT_HEADER_ONLY
 #endif
