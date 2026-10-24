@@ -28,7 +28,7 @@ DeepJIT handles the JIT infrastructure so that kernel libraries can focus on the
 
 The host environment must provide Linux, a C++20 compiler, [fmt][fmt] (header-only), and the [elfutils][elfutils] development headers providing `<elfutils/libdwfl.h>` (`libdw-dev` on Debian/Ubuntu, `elfutils-devel` on RHEL/Fedora). `libdw` is loaded at run time with `dlopen`; only its headers are needed at build time, and consumers on older glibc should additionally link `-ldl`.
 
-The optional `python_api.hpp` binding header also requires [TVM FFI][tvm-ffi]. The test harnesses additionally need PyTorch (`tests/test_maca.py`) and TVM FFI (`tests/test_exception.py`). DeepJIT is intended to be embedded into your extension as a header-only dependency.
+The optional `python_api.hpp` binding header also requires [TVM FFI][tvm-ffi]. The test harnesses additionally need PyTorch (`tests/test_maca.py`) and TVM FFI (`tests/test_exception.py`); both are declared in [`requirements-dev.txt`](requirements-dev.txt) (`pip install -r requirements-dev.txt`). DeepJIT is intended to be embedded into your extension as a header-only dependency.
 
 DeepJIT formats through fmt rather than `std::format`, because some host toolchains (notably the GCC 11 libstdc++ behind MACA's `mxcc`) predate `<format>`. See [`include/deep_jit/utils/format.hpp`](include/deep_jit/utils/format.hpp).
 

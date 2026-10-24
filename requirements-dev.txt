@@ -1,0 +1,10 @@
+# Python dependencies for the test harnesses and the optional TVM FFI binding.
+# The runtime itself is header-only C++: the MACA toolkit, a C++20 compiler,
+# fmt, and the elfutils/libdw headers are documented in README.md.
+
+# `import tvm_ffi` is provided by the `apache-tvm-ffi` distribution.
+# Needed by tests/test_exception.py and by consumers of python_api.hpp.
+apache-tvm-ffi>=0.1.11,~=0.1.0
+
+# Needed by tests/test_maca.py.
+torch>=2.1.0
