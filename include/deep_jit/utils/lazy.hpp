@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <utility>
 #include <dlfcn.h>
 
@@ -13,16 +14,11 @@ namespace deep_jit {
 
 template <typename T>
 class LazyInit {
+    mutable std::mutex mutex;
     std::shared_ptr<T> ptr;
     std::function<std::shared_ptr<T>()> factory;
 
-public:
-    explicit LazyInit(std::nullptr_t) {}
-
-    explicit LazyInit(std::function<std::shared_ptr<T>()> factory)
-        : factory(std::move(factory)) {}
-
-    T* operator->() {
+    T* ensure_initialized_locked() {
         DJ_HOST_ASSERT(factory != nullptr, "lazy object must be initialized before use");
         if (ptr == nullptr)
             ptr = factory();
@@ -30,8 +26,50 @@ public:
         return ptr.get();
     }
 
+public:
+    explicit LazyInit(std::nullptr_t) {}
+
+    explicit LazyInit(std::function<std::shared_ptr<T>()> factory)
+        : factory(std::move(factory)) {}
+
+    LazyInit(const LazyInit& other) {
+        std::lock_guard lock(other.mutex);
+        ptr = other.ptr;
+        factory = other.factory;
+    }
+
+    LazyInit(LazyInit&& other) noexcept {
+        std::lock_guard lock(other.mutex);
+        ptr = std::move(other.ptr);
+        factory = std::move(other.factory);
+    }
+
+    LazyInit& operator=(const LazyInit& other) {
+        if (this != &other) {
+            std::scoped_lock lock(mutex, other.mutex);
+            ptr = other.ptr;
+            factory = other.factory;
+        }
+        return *this;
+    }
+
+    LazyInit& operator=(LazyInit&& other) noexcept {
+        if (this != &other) {
+            std::scoped_lock lock(mutex, other.mutex);
+            ptr = std::move(other.ptr);
+            factory = std::move(other.factory);
+        }
+        return *this;
+    }
+
+    T* operator->() {
+        std::lock_guard lock(mutex);
+        return ensure_initialized_locked();
+    }
+
     std::shared_ptr<T> get() {
-        (void)operator->();
+        std::lock_guard lock(mutex);
+        (void)ensure_initialized_locked();
         return ptr;
     }
 };

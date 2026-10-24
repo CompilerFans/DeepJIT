@@ -185,7 +185,13 @@ public:
     // Resolved per load rather than cached in a process-global, so one
     // Runtime's toolkit cannot decide another's loads.
     [[nodiscard]] static std::shared_ptr<Kernel> load(const std::filesystem::path& dir, const Env& env) {
-        return Kernel::load(dir, env, find_maca_toolkit(env).llvm_nm);
+        return load(dir, env, CompilerOptions{});
+    }
+
+    [[nodiscard]] static std::shared_ptr<Kernel> load(const std::filesystem::path& dir,
+                                                      const Env& env,
+                                                      const CompilerOptions& options) {
+        return Kernel::load(dir, env, find_maca_toolkit(env).llvm_nm, options.kernel_name);
     }
 
     static Toolkit find_maca_toolkit(const Env& env) {

@@ -9,7 +9,6 @@
 #include <tvm/ffi/object.h>
 
 #include <deep_jit/runtime/runtime.hpp>
-#include <deep_jit/utils/exception.hpp>
 #include <deep_jit/utils/lazy.hpp>
 
 namespace deep_jit {
@@ -29,14 +28,6 @@ public:
 template <typename Backend>
 inline tvm::ffi::ObjectRef make_runtime_handle(std::shared_ptr<Runtime<Backend>> runtime) {
     return tvm::ffi::ObjectRef(tvm::ffi::make_object<RuntimeHandle<Backend>>(std::move(runtime)));
-}
-
-// For C++ harnesses: get the runtime back out of a get_jit() result.
-template <typename Backend>
-inline std::shared_ptr<Runtime<Backend>> unwrap_runtime_handle(const tvm::ffi::Any& value) {
-    const auto* handle = value.as<RuntimeHandle<Backend>>();
-    DJ_HOST_ASSERT(handle != nullptr, "get_jit did not return a deep_jit runtime handle");
-    return handle->runtime;
 }
 
 }  // namespace deep_jit

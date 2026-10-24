@@ -4,7 +4,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -125,12 +124,6 @@ inline void safe_remove_all(const std::filesystem::path& path) {
         safe_remove_all(entry_path);
     }
     std::filesystem::remove(path, error_code);
-}
-
-inline std::optional<std::filesystem::path> normalize_path(const std::optional<std::filesystem::path>& path) {
-    if (not path or path->empty())
-        return std::nullopt;
-    return std::filesystem::absolute(*path).lexically_normal();
 }
 
 inline bool is_executable(const std::filesystem::path& path) {

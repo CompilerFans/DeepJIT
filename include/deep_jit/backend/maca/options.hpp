@@ -35,6 +35,8 @@ struct CompilerOptions {
     std::optional<std::vector<std::string>> mxcc_flags;
     std::vector<std::string> extra_mxcc_flags;
     std::optional<std::string> post_hook;
+    // Entry point to load when the artifact defines more than one kernel.
+    std::optional<std::string> kernel_name;
 
     static CompilerOptions default_options(const Env& env, Device& device) {
         const bool debug = env.get<bool>("JIT_DEBUG", false);
@@ -51,7 +53,8 @@ struct CompilerOptions {
             .mxcc_flags = std::vector<std::string> {
                 fmt::format("-std=c++{}", env.get<int>("JIT_CPP_STANDARD", 20)),
             },
-            .post_hook = std::nullopt
+            .post_hook = std::nullopt,
+            .kernel_name = std::nullopt,
         };
     }
 
@@ -82,6 +85,8 @@ struct CompilerOptions {
 
         if (overrides.post_hook)
             result.post_hook = overrides.post_hook;
+        if (overrides.kernel_name)
+            result.kernel_name = overrides.kernel_name;
         return result;
     }
 
@@ -113,6 +118,12 @@ struct CompilerOptions {
     // mxcc has no SASS dump axis.
     void update_hash(hash::FNV1a& hasher) const {
         hasher.update(str::join(get_flags()));
+        // Selecting another entry changes the loaded function, not the binary,
+        // but the two selections must not share a memory or disk cache slot.
+        if (kernel_name) {
+            DJ_HOST_ASSERT(not kernel_name->empty(), "MACA kernel name must be specified");
+            hasher.update(*kernel_name);
+        }
     }
 
     [[nodiscard]] std::string get_post_hook_hash(const Config& config) const {
@@ -143,6 +154,7 @@ struct CompilerOptions {
             {"mxcc_flags", mxcc_flags},
             {"extra_mxcc_flags", extra_mxcc_flags},
             {"post_hook", post_hook},
+            {"kernel_name", kernel_name},
         };
     }
 };
@@ -166,9 +178,6 @@ struct LaunchOptions {
     // Dependent kernel launch
     std::optional<bool> enable_pdl;
 
-    // Others
-    std::optional<bool> nonportable_cluster_size_allowed;
-
     static LaunchOptions default_options(const Env&) {
         return {
             .stream = std::nullopt,
@@ -178,7 +187,6 @@ struct LaunchOptions {
             .cluster_dim = dim3(1, 1, 1),
             .cooperative = false,
             .enable_pdl = false,
-            .nonportable_cluster_size_allowed = false,
         };
     }
 
@@ -198,8 +206,6 @@ struct LaunchOptions {
             result.cooperative = overrides.cooperative;
         if (overrides.enable_pdl)
             result.enable_pdl = overrides.enable_pdl;
-        if (overrides.nonportable_cluster_size_allowed)
-            result.nonportable_cluster_size_allowed = overrides.nonportable_cluster_size_allowed;
         return result;
     }
 };

@@ -67,7 +67,7 @@ cases.
 and it is **backend-agnostic**: it owns `Config`, `Env`, `Device`, `DiskCache`, `Parser`, the memory
 cache, and the backend object, and drives the shared compile/load/launch flow. The backend supplies
 four nested types — `Device`, `Kernel`, `CompilerOptions`, `LaunchOptions` — plus
-`compile(source, dir, env, config, options)` and `static load(dir, env)`, and a
+`compile(source, dir, env, config, options)` and `static load(dir, env, options)`, and a
 `runtime_type_key` for the Python handle.
 
 ### The flow
@@ -75,15 +75,15 @@ four nested types — `Device`, `Kernel`, `CompilerOptions`, `LaunchOptions` —
 ```
 compile(tag, source, opts)
   └─ effective options  = default_compiler_options.override_with(opts)      # unset fields inherit
-  └─ cache_key          = FNV1a(extra_signature, compiler --version,
-                                effective flags, post_hook path+content, parser digest)
+  └─ cache_key          = FNV1a(extra_signature, compiler --version, effective flags,
+                                kernel_name when set, post_hook path+content, parser digest)
   └─ mem_cache.get_or_create(key):
        ├─ DiskCache::entry(tag, key)   # <root>/cache/<tag>.<key>/ with a .committed marker
        │    └─ hit → load that directory
        ├─ miss → backend.compile(...) into <root>/tmp/<uuid>/
        │    └─ writes kernel.cu, kernel.devbin, optional dumps, meta.json
        └─ entry.commit()   # fsync tree, atomic directory rename, .committed marker
-            └─ backend.load(dir, env) → shared_ptr<Kernel>, process-cached
+            └─ backend.load(dir, env, options) → shared_ptr<Kernel>, process-cached
 launch(kernel, opts, args...)  →  kernel->launch(default_launch_options.override_with(opts), args...)
 ```
 
@@ -94,11 +94,16 @@ Key consequences:
 - **`include_dirs` are deliberately excluded from the digest** (moving the same header contents must
   not invalidate); any `-I` you pass through `mxcc_flags` *does* count. `extra_signature` is where
   untracked dependencies (e.g. a CUTLASS version) belong.
-- **`compile()` requires exactly one kernel** in the artifact; `compile_without_load()` skips that
-  check and returns the artifact directory.
+- **`compile()` requires exactly one kernel** in the artifact unless `CompilerOptions::kernel_name`
+  selects an entry point; `compile_without_load()` skips that check and returns the artifact
+  directory. The selected name is part of the digest and is recorded in `meta.json`.
 - Configuration is snapshotted at `Runtime` construction. `config`, `env`, `backend`, `parser`,
   `disk_cache`, `hash_base` are not to be mutated afterwards; only `default_compiler_options` and
-  `default_launch_options` are supported mutable knobs.
+  `default_launch_options` are supported mutable knobs, and those must be configured before the
+  runtime is shared across threads.
+- `LazyInit`, `Device`, `Parser`, and `MemCache` are mutex-protected: TVM FFI releases the GIL, so
+  Python callers can compile, load, and launch concurrently. A missing memory-cache key compiles
+  once; other callers wait for that result.
 - Disk caching is process- and node-shared: builds happen in unique temp dirs and are published by
   atomic rename, so concurrent processes racing the same key all end up at the same entry (the loser
   deletes its own temp dir — see `safe_remove_all`, deliberately not `std::filesystem::remove_all`).

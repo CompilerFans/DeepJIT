@@ -1,11 +1,13 @@
 // Copyright (c) 2026 MetaX Integrated Circuits (Shanghai) Co., Ltd. All rights reserved.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -103,7 +105,8 @@ public:
 
     static std::shared_ptr<Kernel> load(const std::filesystem::path& dir,
                                         const Env& env,
-                                        const std::filesystem::path& llvm_nm) {
+                                        const std::filesystem::path& llvm_nm,
+                                        const std::optional<std::string>& kernel_name = std::nullopt) {
         const auto binary_path = dir / "kernel.devbin";
         if (not std::filesystem::is_regular_file(binary_path))
             DJ_PANIC("missing MACA device binary: {}", binary_path.string());
@@ -115,16 +118,27 @@ public:
         const auto start_time = std::chrono::steady_clock::now();
 
         const auto kernel_names = parse_kernel_names(llvm_nm, binary_path);
-        if (kernel_names.size() != 1)
-            DJ_PANIC("expected exactly one kernel in {}, found {}: {}",
-                     binary_path.string(), kernel_names.size(), str::join(kernel_names));
+        std::string entry_name;
+        if (kernel_name) {
+            DJ_HOST_ASSERT(not kernel_name->empty(), "MACA kernel name must be specified");
+            const auto iterator = std::ranges::find(kernel_names, *kernel_name);
+            if (iterator == kernel_names.end())
+                DJ_PANIC("kernel '{}' was not found in {}, found {}: {}",
+                         *kernel_name, binary_path.string(), kernel_names.size(), str::join(kernel_names));
+            entry_name = *iterator;
+        } else {
+            DJ_HOST_ASSERT(kernel_names.size() == 1,
+                           "expected exactly one kernel in {}, found {}: {}",
+                           binary_path.string(), kernel_names.size(), str::join(kernel_names));
+            entry_name = kernel_names.front();
+        }
 
         mcModule_t module_handle{};
         mcFunction_t kernel_handle{};
         DJ_MACA_DRIVER_CHECK(driver::lazy_mcModuleLoad(&module_handle, binary_path.c_str()));
         try {
             DJ_MACA_DRIVER_CHECK(driver::lazy_mcModuleGetFunction(
-                &kernel_handle, module_handle, kernel_names.front().c_str()));
+                &kernel_handle, module_handle, entry_name.c_str()));
         } catch (...) {
             driver::lazy_mcModuleUnload(module_handle);
             throw;
@@ -146,8 +160,6 @@ public:
         DJ_HOST_ASSERT(launch_options.cluster_dim.has_value(), "MACA cluster dimension must be specified");
         DJ_HOST_ASSERT(launch_options.cooperative.has_value(), "MACA cooperative option must be specified");
         DJ_HOST_ASSERT(launch_options.enable_pdl.has_value(), "MACA PDL option must be specified");
-        DJ_HOST_ASSERT(launch_options.nonportable_cluster_size_allowed.has_value(),
-                       "MACA non-portable cluster option must be specified");
         DJ_HOST_ASSERT(*launch_options.num_smem_bytes >= 0, "MACA dynamic shared-memory size must not be negative");
         DJ_HOST_ASSERT(launch_options.grid_dim->x > 0 and launch_options.grid_dim->y > 0 and launch_options.grid_dim->z > 0,
                        "MACA grid dimensions must be positive");

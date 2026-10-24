@@ -3,8 +3,10 @@
 // drives them through the DeepJIT runtime.
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <exception>
@@ -95,6 +97,34 @@ void expect_any_failure(Function&& function) {
         return;
     }
     DJ_PANIC("expected a failure");
+}
+
+// Start every worker before any of them touches the object under test, then
+// rethrow the first failure on the main thread so assertions stay visible.
+template <typename Function>
+void run_concurrently(const int num_threads, Function&& function) {
+    std::atomic<int> ready{0};
+    std::vector<std::exception_ptr> errors(num_threads);
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+    for (int index = 0; index < num_threads; ++index) {
+        threads.emplace_back([&, index] {
+            ready.fetch_add(1);
+            while (ready.load() < num_threads)
+                std::this_thread::yield();
+            try {
+                function(index);
+            } catch (...) {
+                errors[index] = std::current_exception();
+            }
+        });
+    }
+    for (auto& thread: threads)
+        thread.join();
+    for (const auto& error: errors) {
+        if (error)
+            std::rethrow_exception(error);
+    }
 }
 
 // For failures reachable through more than one layer: any listed message is a
@@ -581,6 +611,28 @@ void test_device_properties(Runtime& runtime) {
                    "the device family does not match mc major {}", major);
 }
 
+void test_device_concurrency(Runtime& runtime) {
+    const auto expected_arch = runtime.device.get_arch();
+    const auto expected_sms = runtime.device.get_num_sms();
+    const auto expected_clock = runtime.device.get_clock_rate();
+
+    constexpr int num_threads = 8;
+    deep_jit::maca::Device device;
+    std::vector<std::string> archs(num_threads);
+    std::vector<int> sms(num_threads);
+    std::vector<int64_t> clocks(num_threads);
+    run_concurrently(num_threads, [&](const int index) {
+        archs[index] = device.get_arch();
+        sms[index] = device.get_num_sms();
+        clocks[index] = device.get_clock_rate();
+    });
+    for (int index = 0; index < num_threads; ++index) {
+        DJ_HOST_ASSERT(archs[index] == expected_arch, "concurrent device queries disagreed on the architecture");
+        DJ_HOST_ASSERT(sms[index] == expected_sms, "concurrent device queries disagreed on the SM count");
+        DJ_HOST_ASSERT(clocks[index] == expected_clock, "concurrent device queries disagreed on the clock rate");
+    }
+}
+
 void test_options(Runtime& runtime) {
     const auto& defaults = runtime.default_compiler_options;
     DJ_HOST_ASSERT(defaults.optimize_level == "3");
@@ -589,6 +641,7 @@ void test_options(Runtime& runtime) {
     DJ_HOST_ASSERT(defaults.dump_asm == false);
     DJ_HOST_ASSERT(defaults.arch.has_value() and defaults.mxcc_flags.has_value());
     DJ_HOST_ASSERT(not defaults.post_hook.has_value());
+    DJ_HOST_ASSERT(not defaults.kernel_name.has_value());
 
     const std::vector<std::string> expected = {
         "--offload-arch=xcore" + *defaults.arch,
@@ -867,6 +920,30 @@ void test_memory_cache() {
     DJ_HOST_ASSERT(not cache.cache.contains("failure"), "failed factory populated the memory cache");
 }
 
+void test_memory_cache_concurrency() {
+    struct Value {
+        int number;
+    };
+
+    constexpr int num_threads = 8;
+    deep_jit::MemCache<std::string, Value> cache;
+    std::atomic<int> num_factory_calls{0};
+    std::vector<std::shared_ptr<Value>> values(num_threads);
+    run_concurrently(num_threads, [&](const int index) {
+        values[index] = cache.get_or_create("same", [&] {
+            ++num_factory_calls;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            return std::make_shared<Value>(Value{9});
+        });
+    });
+    DJ_HOST_ASSERT(num_factory_calls.load() == 1,
+                   "concurrent memory cache misses ran the factory {} times", num_factory_calls.load());
+    DJ_HOST_ASSERT(cache.cache.size() == 1, "concurrent memory cache misses created extra entries");
+    for (const auto& value: values)
+        DJ_HOST_ASSERT(value == values.front() and value->number == 9,
+                       "concurrent memory cache misses did not share one value");
+}
+
 void test_filesystem(const fs::path& cache_root) {
     deep_jit::make_dirs(cache_root);
     const auto path = cache_root / "binary_data";
@@ -893,10 +970,6 @@ void test_filesystem(const fs::path& cache_root) {
     DJ_HOST_ASSERT(deep_jit::read(empty_path).empty(), "empty file was not read correctly");
     DJ_HOST_ASSERT(fs::remove(empty_path));
 
-    DJ_HOST_ASSERT(not deep_jit::normalize_path(std::nullopt).has_value());
-    DJ_HOST_ASSERT(not deep_jit::normalize_path(fs::path{}).has_value());
-    DJ_HOST_ASSERT(deep_jit::normalize_path(fs::path("relative/../normalized")) ==
-                   fs::absolute("normalized").lexically_normal());
     DJ_HOST_ASSERT(deep_jit::is_executable("/bin/sh"));
 
     const auto remove_root = cache_root / "safe_remove_all";
@@ -965,6 +1038,32 @@ void test_parser(const fs::path& cache_root) {
     DJ_HOST_ASSERT(cycle_parser.visiting.empty(), "circular include left stale parser state");
 }
 
+void test_parser_concurrency(const fs::path& cache_root) {
+    const auto root = cache_root / "parser_concurrency";
+    deep_jit::make_dirs(root / "maca");
+    deep_jit::write_file_sync(root / "maca/first.cu", "constexpr int kFirst = 1;\n");
+    deep_jit::write_file_sync(root / "maca/second.cu", "constexpr int kSecond = 2;\n");
+    const std::string first_source = "#include <maca/first.cu>\n#include <maca/second.cu>\n";
+    const std::string second_source = "#include <maca/second.cu>\n#include <maca/first.cu>\n";
+
+    // Reference digests come from a separate parser; the concurrent parser
+    // starts cold, so every thread races on the first include traversal.
+    deep_jit::Parser reference_parser({root}, {"maca/"});
+    const auto first_expected = reference_parser.parse_into_hash(first_source);
+    const auto second_expected = reference_parser.parse_into_hash(second_source);
+
+    constexpr int num_threads = 8;
+    deep_jit::Parser parser({root}, {"maca/"});
+    std::vector<std::string> digests(num_threads);
+    run_concurrently(num_threads, [&](const int index) {
+        digests[index] = parser.parse_into_hash(index % 2 == 0 ? first_source : second_source);
+    });
+    for (int index = 0; index < num_threads; ++index)
+        DJ_HOST_ASSERT(digests[index] == (index % 2 == 0 ? first_expected : second_expected),
+                       "concurrent include parsing returned a different digest");
+    DJ_HOST_ASSERT(parser.visiting.empty(), "concurrent include parsing left stale visit state");
+}
+
 // The headline test: compile a kernel with mxcc, load it, run it on the GPU.
 void test_jit_round_trip(Runtime& runtime) {
     const auto source = get_source("scalar_increment.cu");
@@ -1021,6 +1120,60 @@ void test_multiple_kernels_rejected(Runtime& runtime) {
     check_artifact(runtime.compile_without_load("multiple_kernels", source), source);
     expect_failure([&] { (void)runtime.compile("multiple_kernels", source); },
                    "expected exactly one kernel");
+}
+
+void test_kernel_entry_selection(Runtime& runtime) {
+    const auto source = get_source("multiple_entry_points.cu");
+    const CompilerOptions first_options {.kernel_name = "entry_first"};
+    const CompilerOptions second_options {.kernel_name = "entry_second"};
+    const auto first_effective = runtime.default_compiler_options.override_with(first_options);
+
+    const auto default_key = runtime.cache_key(source, runtime.default_compiler_options);
+    const auto first_key = runtime.cache_key(source, first_effective);
+    const auto second_key = runtime.cache_key(
+        source, runtime.default_compiler_options.override_with(second_options));
+    DJ_HOST_ASSERT(first_key != default_key, "kernel_name did not affect the cache key");
+    DJ_HOST_ASSERT(first_key != second_key, "different kernel names shared a cache key");
+
+    const auto first = runtime.compile("entry_selection_first", source, first_options);
+    const auto second = runtime.compile("entry_selection_second", source, second_options);
+    DJ_HOST_ASSERT(first != second, "different kernel entries shared one in-memory kernel");
+    DJ_HOST_ASSERT(launch_value(runtime, first, 10) == 21, "the first entry point was not loaded");
+    DJ_HOST_ASSERT(launch_value(runtime, second, 10) == 32, "the second entry point was not loaded");
+
+    // The artifact can be loaded again by a process that only has the artifact
+    // directory and the effective options.
+    const auto artifact = runtime.compile_without_load("entry_selection_artifact", source, first_options);
+    DJ_HOST_ASSERT(deep_jit::read(artifact / "meta.json").find("\"kernel_name\":\"entry_first\"") !=
+                       std::string::npos,
+                   "metadata does not record the selected kernel name");
+    const auto reloaded = deep_jit::MACA::load(artifact, runtime.env, first_effective);
+    DJ_HOST_ASSERT(launch_value(runtime, reloaded, 20) == 31,
+                   "MACA::load did not honor the selected kernel name");
+
+    // Without a selection, an ambiguous artifact is still refused.
+    expect_failure([&] { (void)deep_jit::MACA::load(artifact, runtime.env); },
+                   "expected exactly one kernel");
+    expect_failure(
+        [&] {
+            (void)deep_jit::MACA::load(
+                artifact, runtime.env, CompilerOptions {.kernel_name = "missing_kernel"});
+        },
+        "was not found");
+}
+
+void test_concurrent_compile(Runtime& runtime) {
+    const auto source = get_source("scalar_increment.cu") +
+                        "\n// concurrent compile " + deep_jit::get_uuid() + "\n";
+    constexpr int num_threads = 4;
+    std::vector<std::shared_ptr<deep_jit::maca::Kernel>> kernels(num_threads);
+    run_concurrently(num_threads, [&](const int index) {
+        kernels[index] = runtime.compile("concurrent_compile", source);
+    });
+    for (const auto& kernel: kernels)
+        DJ_HOST_ASSERT(kernel == kernels.front(), "concurrent compiles did not share one in-memory kernel");
+    DJ_HOST_ASSERT(launch_value(runtime, kernels.front(), 41) == 42,
+                   "the concurrently compiled kernel produced the wrong value");
 }
 
 void test_compiler_options_affect_result(Runtime& runtime) {
@@ -1121,7 +1274,6 @@ void test_launch_option_validation(Runtime& runtime) {
             .cluster_dim = dim3(1, 1, 1),
             .cooperative = false,
             .enable_pdl = false,
-            .nonportable_cluster_size_allowed = false,
         };
     };
     const auto expect_missing = [&]<typename Member>(Member LaunchOptions::* field, const std::string_view message) {
@@ -1135,7 +1287,6 @@ void test_launch_option_validation(Runtime& runtime) {
     expect_missing(&LaunchOptions::cluster_dim, "cluster dimension must be specified");
     expect_missing(&LaunchOptions::cooperative, "cooperative option must be specified");
     expect_missing(&LaunchOptions::enable_pdl, "PDL option must be specified");
-    expect_missing(&LaunchOptions::nonportable_cluster_size_allowed, "non-portable cluster option must be specified");
 
     // MACA honours only the cooperative attribute; cluster launch and PDL are
     // rejected up front with a clear message.
@@ -1282,6 +1433,29 @@ void test_lazy_init() {
     DJ_HOST_ASSERT(deep_jit::maca::kernel_arg_pointer(no_ref) == &value);
     const deep_jit::NoRefPtr null_no_ref;
     DJ_HOST_ASSERT(deep_jit::maca::kernel_arg_pointer(null_no_ref) == nullptr);
+}
+
+void test_lazy_init_concurrency() {
+    struct Value {
+        int value;
+    };
+
+    constexpr int num_threads = 8;
+    std::atomic<int> num_initializations{0};
+    deep_jit::LazyInit<Value> lazy([&] {
+        ++num_initializations;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        return std::make_shared<Value>(Value{53});
+    });
+    std::vector<std::shared_ptr<Value>> values(num_threads);
+    run_concurrently(num_threads, [&](const int index) {
+        values[index] = lazy.get();
+    });
+    DJ_HOST_ASSERT(num_initializations.load() == 1,
+                   "concurrent lazy initialization ran the factory {} times", num_initializations.load());
+    for (const auto& value: values)
+        DJ_HOST_ASSERT(value == values.front() and value->value == 53,
+                       "concurrent lazy initialization did not share one value");
 }
 
 void test_mixed_arguments(Runtime& runtime) {
@@ -2031,6 +2205,7 @@ void test_cache_key_option_matrix(Runtime& runtime) {
     // the list has to name a different one to be observable.
     expect_changed(CompilerOptions {.mxcc_flags = std::vector<std::string>{"-std=c++17"}}, "mxcc_flags");
     expect_changed(CompilerOptions {.extra_mxcc_flags = {"-DKEY_OPTION=1"}}, "extra_mxcc_flags");
+    expect_changed(CompilerOptions {.kernel_name = "named_kernel"}, "kernel_name");
 
     auto binary_flag_a = runtime.default_compiler_options;
     auto binary_flag_b = runtime.default_compiler_options;
@@ -2476,7 +2651,6 @@ bool test_cooperative_launch(Runtime& runtime) {
                 .cluster_dim = dim3(1, 1, 1),
                 .cooperative = cooperative,
                 .enable_pdl = false,
-                .nonportable_cluster_size_allowed = false,
             },
             output);
         DJ_MACA_RUNTIME_CHECK(mcDeviceSynchronize());
@@ -2885,17 +3059,21 @@ int main(int argc, char** argv) {
     run_test("external command and UUID", [&] { test_command_and_uuid(); });
     run_test("disk cache lifecycle", [&] { test_disk_cache(cache_root); });
     run_test("memory cache", [&] { test_memory_cache(); });
+    run_test("memory cache concurrency", [&] { test_memory_cache_concurrency(); });
     run_test("JSON serialization", [&] { test_json(); });
     run_test("hash boundaries", [&] { test_hash_boundaries(); });
     run_test("hash robustness", [&] { test_hash_robustness(); });
     run_test("lazy initialization", [&] { test_lazy_init(); });
+    run_test("lazy initialization concurrency", [&] { test_lazy_init_concurrency(); });
     run_test("lazy runtime", [&] { test_lazy_runtime(cache_root); });
     run_test("include parser", [&] { test_parser(cache_root); });
+    run_test("include parser concurrency", [&] { test_parser_concurrency(cache_root); });
     run_test("include dirs and signature hashes", [&] { test_include_dirs(cache_root); });
     run_test("untracked dependency include flags", [&] { test_untracked_dependency_include_flags(*runtime, cache_root); });
     run_test("relocated wheel include directory", [&] { test_relocated_wheel_include_dir(cache_root); });
     run_test("MACA toolkit discovery", [&] { test_toolkit_discovery(cache_root); });
     run_test("MACA device", [&] { test_device_properties(*runtime); });
+    run_test("MACA device concurrency", [&] { test_device_concurrency(*runtime); });
     run_test("compiler options", [&] { test_options(*runtime); });
     run_test("consumer default compiler flags", [&] { test_consumer_default_compiler_flags(cache_root); });
     run_test("debug environment", [&] { test_debug_environment(cache_root); });
@@ -2908,6 +3086,8 @@ int main(int argc, char** argv) {
     run_test("JIT vector add", [&] { test_jit_vector_add(*runtime); });
     run_test("template hash and runtime arguments", [&] { test_template_hash_and_launch(*runtime); });
     run_test("kernel count", [&] { test_multiple_kernels_rejected(*runtime); });
+    run_test("kernel entry selection", [&] { test_kernel_entry_selection(*runtime); });
+    run_test("concurrent compile", [&] { test_concurrent_compile(*runtime); });
     run_test("kernel lifecycle", [&] { test_kernel_lifecycle(cache_root); });
     run_test("compiler options affect result", [&] { test_compiler_options_affect_result(*runtime); });
     run_test("mixed kernel arguments", [&] { test_mixed_arguments(*runtime); });

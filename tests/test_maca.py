@@ -140,7 +140,7 @@ def validate_artifacts(cache_root):
         assert set(metadata['compiler_options']) == {
             'optimize_level', 'fast_math', 'compiler_verbose', 'check_no_spills',
             'check_no_local_memory', 'with_line_info', 'dump_asm', 'arch', 'mxcc_flags',
-            'extra_mxcc_flags', 'post_hook',
+            'extra_mxcc_flags', 'post_hook', 'kernel_name',
         }, metadata
         assert metadata['compiler_info']['path'] and metadata['compiler_info']['version'], metadata
         assert metadata['compiler_options']['arch'] and isinstance(metadata['compiler_options']['arch'], str), metadata

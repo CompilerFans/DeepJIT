@@ -38,6 +38,6 @@ mkdir -p "$(dirname "$OUT")"
   -I"$TORCH/include" -I"$TORCH/include/torch/csrc/api/include" \
   -L"$MACA_PATH/lib" -L"$TORCH/lib" \
   -Wl,-rpath,"$TORCH/lib" -Wl,-rpath,"$MACA_PATH/lib" \
-  -lmcruntime -lruntime_cu -lsymbol_cu -ldw -lc10 -lc10_cuda
+  -lmcruntime -lruntime_cu -lsymbol_cu -lc10 -lc10_cuda
 
 echo "built: $OUT"

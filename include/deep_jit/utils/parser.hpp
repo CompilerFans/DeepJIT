@@ -1,8 +1,10 @@
+// 2026 - Modified by MetaX Integrated Circuits (Shanghai) Co., Ltd. All Rights Reserved.
 #pragma once
 
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -16,6 +18,8 @@
 namespace deep_jit {
 
 class Parser {
+    std::mutex mutex;
+
 public:
     const std::vector<std::filesystem::path> include_dirs;
     const std::vector<std::string> include_prefixes;
@@ -66,6 +70,17 @@ public:
     }
 
     std::string parse_includes_into_hash(std::string_view filename) {
+        std::lock_guard lock(mutex);
+        return parse_includes_into_hash_unlocked(filename);
+    }
+
+    std::string parse_into_hash(const std::string& code) {
+        std::lock_guard lock(mutex);
+        return parse_into_hash_unlocked(code);
+    }
+
+private:
+    std::string parse_includes_into_hash_unlocked(std::string_view filename) {
         // Check cache
         std::string key(filename);
         if (const auto iterator = cache.find(key); iterator != cache.end())
@@ -91,7 +106,7 @@ public:
             std::ifstream input(path);
             DJ_HOST_ASSERT(input.is_open(), "failed to open: {}", path.string());
             const std::string code{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
-            const auto hash = parse_into_hash(code);
+            const auto hash = parse_into_hash_unlocked(code);
 
             // Erase and return
             visiting.erase(key);
@@ -102,7 +117,7 @@ public:
         }
     }
 
-    std::string parse_into_hash(const std::string& code) {
+    std::string parse_into_hash_unlocked(const std::string& code) {
         // Parse code itself
         hash::FNV1a hash;
         hash.update(code);
@@ -113,7 +128,7 @@ public:
             const auto newline = view.find('\n');
             const auto line = view.substr(0, newline);
             if (const auto filename = parse_include(line); not filename.empty())
-                hash.update(parse_includes_into_hash(filename));
+                hash.update(parse_includes_into_hash_unlocked(filename));
             view.remove_prefix(newline == std::string_view::npos ? view.size() : newline + 1);
         }
         return hash.get_hex_digest();

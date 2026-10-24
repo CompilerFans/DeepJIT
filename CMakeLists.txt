@@ -23,6 +23,19 @@ set(DEEP_JIT_TOOLKIT_LIBRARIES mcruntime)
 # mxcc. Defaults to a sibling checkout; see utils/format.hpp.
 set(DEEP_JIT_FMT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../fmt" CACHE PATH "Root of an fmt checkout")
 
+# exception.hpp includes <elfutils/libdwfl.h>; libdw itself is dlopen'd at run
+# time, so only the headers are needed here.
+find_path(DEEP_JIT_LIBDW_INCLUDE_DIR
+    NAMES elfutils/libdwfl.h
+    HINTS ${DEEP_JIT_TOOLKIT_INCLUDE_DIRS} "${MACA_PATH}/mxgpu_llvm/include"
+    DOC "Include directory containing elfutils/libdwfl.h")
+if(NOT DEEP_JIT_LIBDW_INCLUDE_DIR)
+    message(FATAL_ERROR
+        "DeepJIT requires the elfutils/libdw headers: install libdw-dev "
+        "(Debian/Ubuntu) or elfutils-devel (RHEL/Fedora), or set "
+        "DEEP_JIT_LIBDW_INCLUDE_DIR.")
+endif()
+
 # TVM FFI ships its CMake config inside the Python package; the CLI probe does
 # not import `tvm_ffi` (whose `__init__` imports torch).
 find_package(Python COMPONENTS Interpreter REQUIRED)
@@ -37,6 +50,7 @@ find_package(Torch REQUIRED)
 include_directories(
     include
     ${DEEP_JIT_FMT_ROOT}/include
+    ${DEEP_JIT_LIBDW_INCLUDE_DIR}
     ${DEEP_JIT_TOOLKIT_INCLUDE_DIRS}
     ${TORCH_INCLUDE_DIRS}
 )
@@ -44,4 +58,4 @@ link_directories(${TORCH_INSTALL_PREFIX}/lib ${DEEP_JIT_TOOLKIT_LIBRARY_DIRS})
 
 # Header-only consumer demo exporting `get_jit` through TVM FFI.
 add_library(_C MODULE csrc/python_api.cpp)
-target_link_libraries(_C PRIVATE tvm_ffi::shared ${TORCH_LIBRARIES} ${DEEP_JIT_TOOLKIT_LIBRARIES})
+target_link_libraries(_C PRIVATE tvm_ffi::shared ${TORCH_LIBRARIES} ${DEEP_JIT_TOOLKIT_LIBRARIES} ${CMAKE_DL_LIBS})

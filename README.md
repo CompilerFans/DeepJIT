@@ -26,10 +26,13 @@ DeepJIT handles the JIT infrastructure so that kernel libraries can focus on the
 | --- | --- | --- |
 | **MACA** | mxcc compiles MACA source to a pre-linked device binary; `libmcruntime` loads and launches kernels. | An MXMACA install providing `mxgpu_llvm/bin/mxcc` 1.0+ and `mxgpu_llvm/bin/llvm-nm` (via `MACA_PATH`, or `/opt/maca`), plus the MACA headers and a PyTorch built for the platform. |
 
-The host environment must provide Linux, a C++20 compiler, and [fmt][fmt] (header-only). The optional `python_api.hpp` binding header also requires [TVM FFI][tvm-ffi]. DeepJIT is intended to be embedded into your extension as a header-only dependency.
+The host environment must provide Linux, a C++20 compiler, [fmt][fmt] (header-only), and the [elfutils][elfutils] development headers providing `<elfutils/libdwfl.h>` (`libdw-dev` on Debian/Ubuntu, `elfutils-devel` on RHEL/Fedora). `libdw` is loaded at run time with `dlopen`; only its headers are needed at build time, and consumers on older glibc should additionally link `-ldl`.
+
+The optional `python_api.hpp` binding header also requires [TVM FFI][tvm-ffi]. The test harnesses additionally need PyTorch (`tests/test_maca.py`) and TVM FFI (`tests/test_exception.py`). DeepJIT is intended to be embedded into your extension as a header-only dependency.
 
 DeepJIT formats through fmt rather than `std::format`, because some host toolchains (notably the GCC 11 libstdc++ behind MACA's `mxcc`) predate `<format>`. See [`include/deep_jit/utils/format.hpp`](include/deep_jit/utils/format.hpp).
 
+[elfutils]: https://sourceware.org/elfutils/
 [fmt]: https://github.com/fmtlib/fmt
 [tvm-ffi]: https://github.com/apache/tvm-ffi
 
@@ -151,7 +154,9 @@ Config(std::filesystem::path python_library_root,
 - `include_dirs` are passed to the compiler and searched by the include parser. Every path must be absolute.
 - `include_prefixes` select which angle-bracket includes are recursively tracked. For example, `"my_library/"` tracks `#include <my_library/kernel.cuh>`.
 
-Configuration is snapshotted when `Runtime` is constructed. Do not mutate `config`, `backend`, `parser`, `disk_cache`, or `hash_base` afterward. The supported mutable per-runtime settings are `default_compiler_options` and `default_launch_options`.
+Configuration is snapshotted when `Runtime` is constructed. Do not mutate `config`, `backend`, `parser`, `disk_cache`, or `hash_base` afterward. The supported mutable per-runtime settings are `default_compiler_options` and `default_launch_options`; configure them before sharing the runtime across threads.
+
+Once constructed, a runtime may be used concurrently from multiple threads: lazy initialization, the device-property snapshot, the include parser, and the in-memory kernel cache are synchronized. A compile miss for one key runs the compiler once; other callers wait for that result.
 
 Compiler, cache, include, and hook paths, as well as free-form compiler flags, are currently passed through a simple shell command and therefore must not contain whitespace or shell metacharacters.
 
@@ -186,7 +191,7 @@ The handle exposes no fields or methods; each call creates a new handle over the
 
 ## MACA
 
-The MACA backend requires an MXMACA install that provides `mxgpu_llvm/bin/mxcc` (version 1.0 or newer) and the `llvm-nm` beside it. It compiles `kernel.cu` to `kernel.devbin` with `mxcc -device-bin` and loads it through `mcModuleLoad`. Loading requires exactly one kernel; `compile_without_load()` only builds the artifact.
+The MACA backend requires an MXMACA install that provides `mxgpu_llvm/bin/mxcc` (version 1.0 or newer) and the `llvm-nm` beside it. It compiles `kernel.cu` to `kernel.devbin` with `mxcc -device-bin` and loads it through `mcModuleLoad`. Loading requires exactly one kernel unless `CompilerOptions::kernel_name` selects an entry point; `compile_without_load()` only builds the artifact.
 
 MACA has no driver-side kernel enumeration, so the entry-point name is recovered from the device binary with `llvm-nm`. `-device-bin` is the only output that both `llvm-nm` can read and `mcModuleLoad` can load.
 
@@ -229,7 +234,15 @@ deep_jit::maca::CompilerOptions options {
 const auto kernel = jit->compile("scale", source, options);
 ```
 
-`mxcc_flags` replaces the default free-form mxcc flag list; structured options such as `optimize_level` are generated separately. `extra_mxcc_flags` appends per-kernel flags such as `-D` definitions. The optimization level, fast math (`-use-fast-math`), the resource report (`-resource-usage`), the spill and local-memory checks, line information (`with_line_info`), the assembly dump, the architecture, and the post hook are all supported. To extend the runtime defaults, append flags directly to `*jit->default_compiler_options.mxcc_flags` during initialization.
+`mxcc_flags` replaces the default free-form mxcc flag list; structured options such as `optimize_level` are generated separately. `extra_mxcc_flags` appends per-kernel flags such as `-D` definitions. The optimization level, fast math (`-use-fast-math`), the resource report (`-resource-usage`), the spill and local-memory checks, line information (`with_line_info`), the assembly dump, the architecture, the entry-point selection, and the post hook are all supported. To extend the runtime defaults, append flags directly to `*jit->default_compiler_options.mxcc_flags` during initialization.
+
+`kernel_name` selects the function to load when the device binary exports more than one kernel; without it, loading requires exactly one. For example:
+
+```cpp
+const auto kernel = jit->compile("scale", source, {.kernel_name = "scale_kernel"});
+```
+
+The name must match a defined entry point in the artifact. It participates in the cache digest and is recorded in `meta.json`, so different entry points do not share a cached kernel. `compile_without_load()` returns the artifact directory; pass the same effective options to `MACA::load(dir, env, options)` to load a selected entry point from it.
 
 The resource report is `compiler_verbose` (`JIT_PTXAS_VERBOSE` is the shared environment-variable name). `ptxas_verbose` is an override-only alias for it; `compiler_verbose` wins if an override carries both.
 
@@ -237,7 +250,7 @@ The resource report is `compiler_verbose` (`JIT_PTXAS_VERBOSE` is the shared env
 
 MACA launch options include the stream, dynamic shared-memory size, grid, block, cluster (`cluster_dim`), cooperative-launch, and PDL (`enable_pdl`) controls. Unset fields inherit from `jit->default_launch_options`. Grid and block dimensions are required and must be positive, and the dynamic shared-memory size cannot be negative. An unset effective stream uses the current PyTorch stream.
 
-**Cluster launch** and **programmatic dependent launch** are not implemented by the MACA runtime and are rejected before the driver is reached; `mcModuleLaunchKernelEx` honours only the cooperative flag. `nonportable_cluster_size_allowed` has no MACA counterpart. Dynamic shared memory needs no attribute call: the launch enforces the `sharedMemPerBlockOptin` ceiling itself.
+**Cluster launch** and **programmatic dependent launch** are not implemented by the MACA runtime and are rejected before the driver is reached; `mcModuleLaunchKernelEx` honours only the cooperative flag. Dynamic shared memory needs no attribute call: the launch enforces the `sharedMemPerBlockOptin` ceiling itself.
 
 Device information is available from `jit->device`:
 
@@ -285,7 +298,7 @@ The MACA cache digest is built, in order, from:
 
 1. `Config::extra_signature`.
 2. The hash of the complete `mxcc --version` output.
-3. The effective compiler flags returned by `CompilerOptions::get_flags()`. Paths in `Config::include_dirs` are intentionally excluded, while any `-I...` placed directly in `mxcc_flags` or `extra_mxcc_flags` remains part of the digest.
+3. The effective compiler flags returned by `CompilerOptions::get_flags()`, followed by `CompilerOptions::kernel_name` when set. Paths in `Config::include_dirs` are intentionally excluded, while any `-I...` placed directly in `mxcc_flags` or `extra_mxcc_flags` remains part of the digest.
 4. The selected `post_hook` path and file-content hash.
 5. The parser digest of the source and its tracked include tree.
 

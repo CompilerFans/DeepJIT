@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <utility>
 
@@ -33,12 +34,14 @@ inline void check_maca_runtime(const mcError_t error, const char* expression) {
 #endif
 
 class Device {
+    std::mutex mutex;
     mcDeviceProp_t prop{};
     int64_t clock_rate = 0;
     bool initialized = false;
 
 public:
     const mcDeviceProp_t& get_prop() {
+        std::lock_guard lock(mutex);
         if (not initialized) {
             // Ensure the MACA context exists before driver API calls.
             int device_index = 0;
@@ -57,6 +60,7 @@ public:
     int get_num_smem_bytes() { return static_cast<int>(get_prop().sharedMemPerBlockOptin); }
 
     int64_t get_clock_rate() {
+        std::lock_guard lock(mutex);
         if (clock_rate == 0) {
             int device_index = 0;
             int rate = 0;
