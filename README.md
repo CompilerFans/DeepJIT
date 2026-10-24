@@ -12,7 +12,7 @@ DeepJIT handles the JIT infrastructure so that kernel libraries can focus on the
 - **Kernel caching:** reuse loaded kernels in memory and compiled artifacts on disk. Cache keys account for source, tracked includes, compiler versions, effective compiler options, and an application-provided dependency signature.
 - **Distributed filesystems and shared caches:** share one cache directory across users, processes, and nodes to reuse compiled kernels. DeepJIT uses local and distributed filesystems with the required POSIX filesystem semantics; see [Shared cache](#shared-cache) for configuration.
 - **Lazy initialization:** defer device and compiler discovery until the runtime is first used.
-- **PyTorch integration:** use the current PyTorch stream by default, and expose the configured runtime to Python through TVM FFI with `get_jit()`.
+- **Torch-free headers:** no PyTorch/ATen/c10 dependency — stream-owning consumers pass their current stream through the launch options, and the configured runtime is exposed to Python through TVM FFI with `get_jit()`.
 - **Compilation controls and diagnostics:** configure runtime defaults and per-kernel overrides, inspect compilation metadata, dump MACA assembly, and run a Python post-compilation hook.
 
 ### In development (WIP)
@@ -24,11 +24,11 @@ DeepJIT handles the JIT infrastructure so that kernel libraries can focus on the
 
 | Backend | Device toolchain and runtime | Integration requirements |
 | --- | --- | --- |
-| **MACA** | mxcc compiles MACA source to a pre-linked device binary; `libmcruntime` loads and launches kernels. | An MXMACA install providing `mxgpu_llvm/bin/mxcc` 1.0+ and `mxgpu_llvm/bin/llvm-nm` (via `MACA_PATH`, or `/opt/maca`), plus the MACA headers and a PyTorch built for the platform. |
+| **MACA** | mxcc compiles MACA source to a pre-linked device binary; `libmcruntime` loads and launches kernels. | An MXMACA install providing `mxgpu_llvm/bin/mxcc` 1.0+ and `mxgpu_llvm/bin/llvm-nm` (via `MACA_PATH`, or `/opt/maca`), plus the MACA headers. |
 
 The host environment must provide Linux, a C++20 compiler, [fmt][fmt] (header-only), and the [elfutils][elfutils] development headers providing `<elfutils/libdwfl.h>` (`libdw-dev` on Debian/Ubuntu, `elfutils-devel` on RHEL/Fedora). `libdw` is loaded at run time with `dlopen`; only its headers are needed at build time, and consumers on older glibc should additionally link `-ldl`.
 
-The optional `python_api.hpp` binding header also requires [TVM FFI][tvm-ffi]. The test harnesses additionally need PyTorch (`tests/test_maca.py`) and TVM FFI (`tests/test_exception.py`); both are declared in [`requirements.txt`](requirements.txt) (`pip install -r requirements.txt`). DeepJIT is intended to be embedded into your extension as a header-only dependency.
+The optional `python_api.hpp` binding header also requires [TVM FFI][tvm-ffi]. The exception/backtrace harness (`tests/test_exception.py`) additionally needs PyTorch and TVM FFI, both declared in [`requirements.txt`](requirements.txt) (`pip install -r requirements.txt`); the MACA harness (`tests/test_maca.py`) needs neither. DeepJIT is intended to be embedded into your extension as a header-only dependency.
 
 DeepJIT formats through fmt rather than `std::format`, because some host toolchains (notably the GCC 11 libstdc++ behind MACA's `mxcc`) predate `<format>`. See [`include/deep_jit/utils/format.hpp`](include/deep_jit/utils/format.hpp).
 
@@ -248,7 +248,7 @@ The resource report is `compiler_verbose` (`JIT_PTXAS_VERBOSE` is the shared env
 
 `check_no_spills` and `check_no_local_memory` both reject a non-empty mxcc stack-frame report: mxcc has no separate local-memory figure, and either check implies `-resource-usage`.
 
-MACA launch options include the stream, dynamic shared-memory size, grid, block, cluster (`cluster_dim`), cooperative-launch, and PDL (`enable_pdl`) controls. Unset fields inherit from `jit->default_launch_options`. Grid and block dimensions are required and must be positive, and the dynamic shared-memory size cannot be negative. An unset effective stream uses the current PyTorch stream.
+MACA launch options include the stream, dynamic shared-memory size, grid, block, cluster (`cluster_dim`), cooperative-launch, and PDL (`enable_pdl`) controls. Unset fields inherit from `jit->default_launch_options`. Grid and block dimensions are required and must be positive, and the dynamic shared-memory size cannot be negative. An unset effective stream launches on the driver's default stream; consumers that own a stream (PyTorch, TVM FFI) set `default_launch_options.stream` (e.g. from `TVMFFIEnvGetStream`).
 
 **Cluster launch** and **programmatic dependent launch** are not implemented by the MACA runtime and are rejected before the driver is reached; `mcModuleLaunchKernelEx` honours only the cooperative flag. Dynamic shared memory needs no attribute call: the launch enforces the `sharedMemPerBlockOptin` ceiling itself.
 

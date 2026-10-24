@@ -45,17 +45,16 @@ execute_process(
     OUTPUT_STRIP_TRAILING_WHITESPACE
     COMMAND_ERROR_IS_FATAL ANY)
 find_package(tvm_ffi CONFIG REQUIRED PATHS "${TVM_FFI_CMAKE_DIR}" NO_DEFAULT_PATH)
-find_package(Torch REQUIRED)
 
 include_directories(
     include
     ${DEEP_JIT_FMT_ROOT}/include
     ${DEEP_JIT_LIBDW_INCLUDE_DIR}
     ${DEEP_JIT_TOOLKIT_INCLUDE_DIRS}
-    ${TORCH_INCLUDE_DIRS}
 )
-link_directories(${TORCH_INSTALL_PREFIX}/lib ${DEEP_JIT_TOOLKIT_LIBRARY_DIRS})
+link_directories(${DEEP_JIT_TOOLKIT_LIBRARY_DIRS})
 
-# Header-only consumer demo exporting `get_jit` through TVM FFI.
+# Header-only consumer demo exporting `get_jit` through TVM FFI. The headers
+# are torch-free, so the demo needs no Torch package.
 add_library(_C MODULE csrc/python_api.cpp)
-target_link_libraries(_C PRIVATE tvm_ffi::shared ${TORCH_LIBRARIES} ${DEEP_JIT_TOOLKIT_LIBRARIES} ${CMAKE_DL_LIBS})
+target_link_libraries(_C PRIVATE tvm_ffi::shared ${DEEP_JIT_TOOLKIT_LIBRARIES} ${CMAKE_DL_LIBS})

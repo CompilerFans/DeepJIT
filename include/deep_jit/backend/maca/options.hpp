@@ -161,7 +161,7 @@ struct CompilerOptions {
 
 // Per-launch MACA options. Unset fields inherit from runtime defaults.
 struct LaunchOptions {
-    // Use current stream if unset
+    // Use the driver's default stream (nullptr) if unset
     std::optional<mcStream_t> stream;
 
     // Dynamic shared memory size

@@ -12,7 +12,6 @@
 #include <type_traits>
 #include <vector>
 
-#include <ATen/cuda/CUDAContext.h>
 #include <mc_runtime.h>
 
 #include <deep_jit/backend/maca/driver.hpp>
@@ -194,9 +193,12 @@ public:
         config.blockDimY = launch_options.block_dim->y;
         config.blockDimZ = launch_options.block_dim->z;
         config.sharedMemBytes = static_cast<unsigned int>(*launch_options.num_smem_bytes);
-        config.hStream = launch_options.stream
-            ? *launch_options.stream
-            : static_cast<mcStream_t>(at::cuda::getCurrentCUDAStream().stream());
+        // No implicit current-stream query: the headers are torch-free (a
+        // hard ATen dependency here would leak a c10 symbol into every
+        // consumer's artifact).  An unset stream launches on the driver's
+        // default stream; stream-owning consumers (PyTorch, TVM FFI) pass
+        // their current stream through `default_launch_options.stream`.
+        config.hStream = launch_options.stream.value_or(nullptr);
         config.attrs = num_attributes == 0 ? nullptr : attributes.data();
         config.numAttrs = num_attributes;
         DJ_MACA_DRIVER_CHECK(driver::lazy_mcModuleLaunchKernelEx(

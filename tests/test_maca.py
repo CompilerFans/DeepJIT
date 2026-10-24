@@ -12,8 +12,6 @@ import tempfile
 import time
 from pathlib import Path
 
-import torch
-
 
 if not __debug__:
     raise RuntimeError('DeepJIT tests require Python assertions to be enabled')
@@ -65,11 +63,9 @@ def clear_external_jit_environment():
 
 
 def build_harness(temporary_dir):
-    """Build the standalone C++ harness. `TORCH_ROOT` avoids build.sh's
-    `python` lookup, which need not be on PATH in a non-interactive shell."""
+    """Build the standalone C++ harness."""
     output = temporary_dir / 'test_maca'
     environment = dict(os.environ)
-    environment.setdefault('TORCH_ROOT', str(Path(torch.__file__).resolve().parent))
     environment.setdefault('MACA_PATH', str(maca_path()))
     environment.setdefault('FMT_ROOT', str(fmt_root()))
     environment.setdefault('CXX', str(host_compiler()))
@@ -175,17 +171,17 @@ def fmt_root():
 
 
 def header_self_containment_command(source, output):
-    """MACA, cu-bridge, torch and fmt include roots, mirroring build.sh.
-    `-fsyntax-only` is not in mxcc's option table, so compile an object file
-    with `-Werror` instead."""
-    torch_root = Path(os.environ.get('TORCH_ROOT') or Path(torch.__file__).resolve().parent)
+    """MACA, cu-bridge and fmt include roots, mirroring build.sh. No PyTorch
+    root: the headers are torch-free, and the check must fail if a c10/ATen
+    dependency is reintroduced. `-fsyntax-only` is not in mxcc's option
+    table, so compile an object file with `-Werror` instead."""
     maca = maca_path()
 
     command = [
         str(host_compiler()), '-c', '-o', str(output), '-std=c++20',
         '-Werror', '-Wno-attributes', '-Wno-deprecated-declarations',
         '-Wno-missing-field-initializers', '-Wno-psabi', '-Wno-unused-function',
-        # Required by the platform's PyTorch headers, which kernel.hpp includes.
+        # Consulted by the cu-bridge headers.
         '-DUSE_MACA', '-D_GNU_SOURCE',
     ]
     for path in (
@@ -195,7 +191,6 @@ def header_self_containment_command(source, output):
         maca / 'include/mcsparse', maca / 'include/mcblas', maca / 'include/mcsolver',
         maca / 'include/misc', maca / 'include/common', maca / 'include/mctx',
         maca / 'tools/cu-bridge/include',
-        torch_root / 'include', torch_root / 'include/torch/csrc/api/include',
         Path(sysconfig.get_paths()['include']),
     ):
         command.append('-I' + str(path))
