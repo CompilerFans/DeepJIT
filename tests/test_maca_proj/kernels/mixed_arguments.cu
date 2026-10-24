@@ -1,9 +1,5 @@
-// Exercises the kernel-argument ABI: several scalar widths in one signature,
-// including a 1-byte `bool` (the width most likely to be sized wrong) and an
-// 8-byte unsigned, plus a pointer the caller also passes through `NoRefPtr`.
-//
-// Every term is exactly representable in binary32, so the sum has to match bit
-// for bit rather than within a tolerance.
+// Kernel-argument ABI: mixed scalar widths, including a 1-byte `bool`, plus a
+// pointer also passed through `NoRefPtr`.  All terms are exact in binary32.
 extern "C" __global__ void mixed_arguments_kernel(float* output,
                                                   const int a,
                                                   const float b,

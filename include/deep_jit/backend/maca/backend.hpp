@@ -3,7 +3,6 @@
 #include <cstdio>
 #include <filesystem>
 #include <memory>
-#include <optional>
 #include <regex>
 #include <string>
 #include <utility>
@@ -18,7 +17,6 @@
 #include <deep_jit/utils/env.hpp>
 #include <deep_jit/utils/exception.hpp>
 #include <deep_jit/utils/filesystem.hpp>
-#include <deep_jit/utils/gil.hpp>
 #include <deep_jit/utils/hash.hpp>
 #include <deep_jit/utils/json.hpp>
 #include <deep_jit/utils/str.hpp>
@@ -27,6 +25,8 @@ namespace deep_jit {
 
 class MACA {
 public:
+    static constexpr const char* runtime_type_key = "deep_jit.Runtime.MACA";
+
     using Device = maca::Device;
     using Kernel = maca::Kernel;
     using CompilerOptions = maca::CompilerOptions;
@@ -71,13 +71,7 @@ public:
         DJ_HOST_ASSERT(std::regex_search(version, match, std::regex(R"(mxcc version (\d+)\.(\d+))")),
                        "failed to parse mxcc version from:\n{}", version);
 
-        // Minimum toolchain version, in the shape CUDA uses for NVCC.  1.0 is
-        // the SUPPORTED FLOOR, not a measured feature boundary: it is the
-        // toolchain this backend is validated against (MACA 3.7.0 ships
-        // `mxcc version 1.0.0`), and older MACA releases are out of scope
-        // rather than merely untested.  It is a check at all because a
-        // too-old mxcc otherwise surfaces as an opaque compiler error or as
-        // the missing-artifact assert below, never as a version statement.
+        // Minimum supported toolchain; older releases are out of scope.
         constexpr int minimum_major = 1;
         constexpr int minimum_minor = 0;
         const int major = std::stoi(match[1].str());
@@ -105,27 +99,16 @@ public:
                  const Env& env,
                  const Config& config,
                  const CompilerOptions& options) const {
-        // Release GIL to let other Python threads run
-        [[maybe_unused]] GilScopedRelease gil_release;
-
-        // Paths
         dir = std::filesystem::absolute(dir).lexically_normal();
         const auto source_path = dir / "kernel.cu";
         const auto binary_path = dir / "kernel.devbin";
         const bool debug = env.get<bool>("JIT_DEBUG", false);
         const bool print_compiler_command = debug or env.get<bool>("JIT_PRINT_COMPILER_COMMAND", false);
 
-        // Write source code
         write_file_sync(source_path, source);
 
-        // Build the full command.  mxcc has no `--cubin`; the pre-linked
-        // device-only binary is `-device-bin` (already loadable by
-        // `mcModuleLoad` without a device-side link step at load time).
-        // NOTE: the alternative `-fatbin` bundle is also loadable but is an
-        // opaque container that `llvm-nm` cannot read, and the
-        // `-fgpu-rdc --device-bc` bitcode form defers the device link to
-        // load time -- neither can serve both the symbol-discovery and the
-        // load path, so `-device-bin` is the one artifact that does.
+        // `-device-bin` is the only output that both `llvm-nm` can read and
+        // `mcModuleLoad` can load directly.
         std::vector<std::string> args = {
             toolkit.mxcc.string(),
             source_path.string(),
@@ -139,23 +122,15 @@ public:
         args.insert(args.end(), common_args.begin(), common_args.end());
         const auto command = str::join(args);
 
-        // NOTES: change directory into a temporary empty directory to prevent same name include files
+        // Compile from the artifact directory to avoid same-name includes.
         const auto cd_command = "cd " + dir.string() + " && ";
-
-        // Compile
         const auto compiler_output = call_external_command(cd_command + command, print_compiler_command);
         if (options.compiler_verbose.value_or(false)) {
             std::fputs(compiler_output.c_str(), stdout);
             std::fflush(stdout);
         }
-        // `-resource-usage` reports the frame size per function as
-        // "N bytes stack frame"; a non-zero value is the spill signal.  mxcc
-        // has no second figure: unlike PTXAS there is no local-memory line at
-        // all (measured on a kernel with an 8 KiB frame, mxcc's whole report
-        // is "N bytes stack frame", the register counts and the shared-memory
-        // count), so `check_no_local_memory` validates that same report and
-        // the two checks coincide on MACA.  Both need `-resource-usage` to be
-        // present at all -- see `CompilerOptions::get_flags`.
+        // `-resource-usage` reports "N bytes stack frame"; mxcc has no
+        // separate local-memory figure, so both checks read the same report.
         if (options.check_no_spills.value_or(false) or options.check_no_local_memory.value_or(false)) {
             std::smatch match;
             const auto text = compiler_output;
@@ -170,7 +145,6 @@ public:
                        "mxcc did not produce a valid device binary: {}",
                        binary_path.string());
 
-        // Run post hook
         if (options.post_hook) {
             const auto hook_path = config.get_python_path(*options.post_hook);
             const auto hook_command = "cd " + dir.string() +
@@ -178,8 +152,7 @@ public:
             call_external_command(hook_command, print_compiler_command);
         }
 
-        // Dump device assembly.  `-aop -S --device-obj` is the emitting form;
-        // a bare `-S` is rejected by mxcc.
+        // `-aop -S --device-obj` is the emitting form; a bare `-S` is rejected.
         if (options.dump_asm.value_or(false)) {
             const auto asm_path = dir / "kernel.s";
             std::vector<std::string> asm_args = {
@@ -199,7 +172,6 @@ public:
                            "mxcc did not produce a valid device assembly: {}", asm_path.string());
         }
 
-        // Write metadata
         const json metadata = json::object_t {
             {"command", command},
             {"config", config.to_json()},
@@ -209,36 +181,19 @@ public:
         write_file_sync(dir / "meta.json", metadata.dump());
     }
 
-    // `Runtime` invokes this statically as `Backend::load(dir, env)`, and the
-    // toolkit is resolved from that same `env` here rather than carried over
-    // from the constructor.  Unlike CUDA's load, this one needs a path out of
-    // the toolkit (`llvm-nm`), so it cannot simply be a pass-through -- but a
-    // process-global would let one Runtime's toolkit silently decide another
-    // Runtime's loads, and would race if two Runtimes were constructed
-    // concurrently.  Resolving per load costs a couple of `stat` calls against
-    // a `dlopen` + `mcModuleLoad`.
+    // Resolved per load rather than cached in a process-global, so one
+    // Runtime's toolkit cannot decide another's loads.
     [[nodiscard]] static std::shared_ptr<Kernel> load(const std::filesystem::path& dir, const Env& env) {
         return Kernel::load(dir, env, find_maca_toolkit(env).llvm_nm);
     }
 
     static Toolkit find_maca_toolkit(const Env& env) {
-        // The lookup ladder mirrors the MACA SDK's own `cucc` wrapper and the
-        // host project's documented order: an explicit setting is
-        // authoritative, then the compiler bin directory (`MACA_CLANG_PATH`),
-        // then the install roots (`MACA_PATH`, then the cu-bridge
-        // `CUDA_HOME`/`CUDA_PATH`, whose sibling layout also carries the
-        // `mxgpu_llvm` toolchain), then `mxcc` on PATH, then the default
-        // `/opt/maca` install.  `MACA_HOME` is deliberately NOT consulted: no
-        // MXMACA install defines it, and an unrelated variable of that name
-        // would shadow the real settings.
+        // Order: JIT_MXCC_COMPILER, MACA_CLANG_PATH, MACA_PATH/CUDA_HOME/
+        // CUDA_PATH, `mxcc` on PATH, /opt/maca.  MACA_HOME is not used.
         std::filesystem::path mxcc;
         if (const auto path = env.get<std::string>("JIT_MXCC_COMPILER"); path and not path->empty()) {
             mxcc = std::filesystem::absolute(*path).lexically_normal();
         } else if (const auto clang_path = get_env<std::string>("MACA_CLANG_PATH"); not clang_path.empty()) {
-            // `MACA_CLANG_PATH` names the bin directory itself (commonly
-            // exported with a trailing slash); like the install roots it
-            // names an installation rather than a library setting, so it is
-            // read unprefixed.
             mxcc = std::filesystem::absolute(std::filesystem::path(clang_path) / "mxcc").lexically_normal();
         } else {
             std::filesystem::path home_path;
@@ -248,9 +203,8 @@ public:
                     break;
             }
             if (home_path.empty()) {
-                // `mxcc` on PATH, with symlinks resolved so the sibling
-                // `llvm-nm` is looked up next to the real file (`/usr/bin/mxcc`
-                // is typically a symlink into the SDK).
+                // Resolve symlinks so the sibling `llvm-nm` is found next to
+                // the real file.
                 try {
                     auto path = call_external_command("which mxcc");
                     while (not path.empty() and (path.back() == '\r' or path.back() == '\n'))
@@ -265,9 +219,6 @@ public:
             if (mxcc.empty()) {
                 if (home_path.empty() and std::filesystem::exists("/opt/maca"))
                     home_path = "/opt/maca";
-                // A home that is set but does not exist is an error, not a
-                // reason to try the next name down: a typo must not silently
-                // select a different install.
                 DJ_HOST_ASSERT(not home_path.empty() and std::filesystem::exists(home_path),
                                "MACA toolkit home was not found");
                 home_path = std::filesystem::absolute(home_path).lexically_normal();
@@ -276,7 +227,7 @@ public:
         }
         DJ_HOST_ASSERT(is_executable(mxcc), "mxcc compiler is not executable: {}", mxcc.string());
 
-        // `llvm-nm` sits next to mxcc in the same toolchain
+        // `llvm-nm` sits next to mxcc in the same toolchain.
         std::filesystem::path llvm_nm;
         if (const auto path = env.get<std::string>("JIT_LLVM_NM"); path and not path->empty()) {
             llvm_nm = std::filesystem::absolute(*path).lexically_normal();

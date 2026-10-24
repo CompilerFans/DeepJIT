@@ -8,8 +8,6 @@
 
 #include <deep_jit/utils/exception.hpp>
 
-#define DJ_DECLARE_STATIC_VAR_IN_CLASS(cls, name) decltype(cls::name) cls::name
-
 namespace deep_jit {
 
 template <typename T>

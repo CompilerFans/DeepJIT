@@ -9,7 +9,6 @@
 #include <deep_jit/cache/memory.hpp>
 #include <deep_jit/runtime/config.hpp>
 #include <deep_jit/utils/env.hpp>
-#include <deep_jit/utils/gil.hpp>
 #include <deep_jit/utils/hash.hpp>
 #include <deep_jit/utils/lazy.hpp>
 #include <deep_jit/utils/parser.hpp>
@@ -85,7 +84,6 @@ public:
         backend.compile(source, entry.path, env, config, options);
 
         // Publish
-        [[maybe_unused]] GilScopedRelease gil_release;
         return entry.commit();
     }
 

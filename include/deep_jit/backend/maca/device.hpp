@@ -10,9 +10,7 @@
 
 namespace deep_jit::maca {
 
-// The xcore family identifiers: the keys of the per-family attribute table
-// (deep_gemm.utils.arch_config) and the mxcc offload targets
-// (xcore1000/1500/1600 = C500/C600/C600U).
+// mxcc offload targets: xcore1000/1500/1600 = C500/C600/C600U.
 enum class XcoreFamily : int {
     xcore1000 = 1000,
     xcore1500 = 1500,
@@ -41,8 +39,7 @@ class Device {
 public:
     const mcDeviceProp_t& get_prop() {
         if (not initialized) {
-            // `mcFree(nullptr)` is to ensure the current MACA context exists
-            // before later driver API calls.
+            // Ensure the MACA context exists before driver API calls.
             int device_index = 0;
             DJ_MACA_RUNTIME_CHECK(mcGetDevice(&device_index));
             DJ_MACA_RUNTIME_CHECK(mcFree(nullptr));
@@ -75,10 +72,8 @@ public:
 
     std::pair<int, int> get_arch_pair() { return {get_arch_major(), get_arch_minor()}; }
 
-    // The device's xcore family.  The mc native arch major IS the family's
-    // leading digits (mc major 10/15/16 -> xcore1000/1500/1600); the minor
-    // is a revision inside the family and is not a judgment axis.  An
-    // unknown major is a tripwire, not a speculative mapping.
+    // mc major 10/15/16 selects the xcore family; the minor is a revision
+    // inside it.  An unknown major is an error, not a speculative mapping.
     XcoreFamily get_family() {
         switch (get_arch_major()) {
             case 10: return XcoreFamily::xcore1000;
@@ -89,9 +84,7 @@ public:
         }
     }
 
-    // The mxcc offload target for the judged family -- the value that goes
-    // into `--offload-arch=`.  The family digits are the family identity
-    // itself; never derive them by arithmetic from the mc major.
+    // Value used for `--offload-arch=xcore<digits>`.
     std::string get_arch() { return std::to_string(static_cast<int>(get_family())); }
 };
 

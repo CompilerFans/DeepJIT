@@ -24,11 +24,7 @@ struct CompilerOptions {
     std::optional<std::string> optimize_level;
     std::optional<bool> fast_math;
     std::optional<bool> compiler_verbose;
-    // CUDA's spelling of `compiler_verbose`, kept so a CUDA-side
-    // `CompilerOptions{.ptxas_verbose = ...}` ports onto this backend
-    // unchanged.  It is an input alias only -- `default_options` never sets
-    // it, `override_with` folds it into `compiler_verbose`, and the flags,
-    // the cache digest and `meta.json` all read the canonical field.
+    // Input alias for `compiler_verbose`, kept for existing option sets.
     std::optional<bool> ptxas_verbose;
     std::optional<bool> check_no_spills;
     std::optional<bool> check_no_local_memory;
@@ -64,8 +60,7 @@ struct CompilerOptions {
             result.optimize_level = overrides.optimize_level;
         if (overrides.fast_math)
             result.fast_math = overrides.fast_math;
-        // CUDA's spelling is an alias for the same option; the canonical
-        // field wins when both are set on the same override.
+        // The canonical field wins when both spellings are set.
         if (overrides.ptxas_verbose)
             result.compiler_verbose = overrides.ptxas_verbose;
         if (overrides.compiler_verbose)
@@ -90,41 +85,31 @@ struct CompilerOptions {
     }
 
     [[nodiscard]] std::vector<std::string> get_flags() const {
-        // Arch (the xcore offload target)
         DJ_HOST_ASSERT(arch.has_value() and not arch->empty(), "MACA architecture must be specified");
         std::vector flags = {"--offload-arch=xcore" + *arch};
 
-        // Optimization level
         DJ_HOST_ASSERT(optimize_level.has_value() and not optimize_level->empty(), "optimization level must be specified");
         flags.emplace_back("-O" + *optimize_level);
 
-        // Global fast-math
         if (fast_math.value_or(false))
             flags.emplace_back("-use-fast-math");
 
-        // Print per-function resource usage (the mxcc analogue of PTXAS -v;
-        // `JIT_PTXAS_VERBOSE` is the shared environment name for it).  mxcc
-        // emits the "N bytes stack frame" line that the spill and
-        // local-memory checks read, and emits it only under this flag, so a
-        // check that validates that report has to request it too.
+        // mxcc emits the stack-frame report only under this flag, so the
+        // spill and local-memory checks must request it too.
         if (compiler_verbose.value_or(false) or check_no_spills.value_or(false) or
             check_no_local_memory.value_or(false))
             flags.emplace_back("-resource-usage");
 
-        // Line info for debugging
         if (with_line_info.value_or(false))
             flags.emplace_back("--generate-line-info");
 
-        // Other flags
         if (mxcc_flags)
             flags.insert(flags.end(), mxcc_flags->begin(), mxcc_flags->end());
         flags.insert(flags.end(), extra_mxcc_flags.begin(), extra_mxcc_flags.end());
         return flags;
     }
 
-    // mxcc takes a single input file and emits a single device artifact;
-    // it has no `nvcc --cubin` and no `cuobjdump --dump-sass` counterpart,
-    // so there is no SASS dump axis.
+    // mxcc has no SASS dump axis.
     void update_hash(hash::FNV1a& hasher) const {
         hasher.update(str::join(get_flags()));
     }
@@ -133,13 +118,11 @@ struct CompilerOptions {
         if (not post_hook)
             return "";
 
-        // Check cache hit
         thread_local std::unordered_map<std::string, std::string> post_hook_hashes;
         const auto path = config.get_python_path(*post_hook);
         if (const auto iterator = post_hook_hashes.find(path); iterator != post_hook_hashes.end())
             return iterator->second;
 
-        // Miss: update hash
         const auto digest = hash::FNV1a()
             .update(*post_hook).update(read(path))
             .get_hex_digest();

@@ -1,6 +1,5 @@
-// MACA backend test harness.  Mirrors the structure of tests/test_cuda_proj:
-// a standalone host binary that JIT-compiles kernels with mxcc, loads them
-// through mcModuleLoad, and launches them on the device.
+// Standalone MACA test harness: compiles kernels with mxcc at run time and
+// drives them through the DeepJIT runtime.
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -85,9 +84,8 @@ void expect_failure(Function&& function, const std::string_view expected_message
     DJ_PANIC("expected failure containing: {}", expected_message);
 }
 
-// For failures whose message comes from the driver rather than from DeepJIT's
-// own checks: the shape of the error text is the platform's, so only the
-// refusal itself can be asserted on.
+// For driver-level failures only the refusal itself is asserted; the error
+// text belongs to the platform.
 template <typename Function>
 void expect_any_failure(Function&& function) {
     try {
@@ -98,9 +96,8 @@ void expect_any_failure(Function&& function) {
     DJ_PANIC("expected a failure");
 }
 
-// For failures that a caller can reach through more than one layer, where each
-// layer has its own message: any of the named messages is a correct refusal,
-// anything else is a different failure being mistaken for the expected one.
+// For failures reachable through more than one layer: any listed message is a
+// correct refusal.
 template <typename Function>
 void expect_failure_any_of(Function&& function, const std::initializer_list<std::string_view> messages) {
     try {
@@ -217,10 +214,8 @@ std::string get_template_source(const int bias) {
         bias);
 }
 
-// The literal is carried as a hexadecimal float (`0x1.4p+3`), the exact form
-// the compiler re-parses: formatting a value into source text and reading it
-// back must reproduce the same float bit for bit, including signed zero and
-// negative values.  The exponent makes `0.0f` distinguishable from `-0.0f`.
+// The literal is a hexadecimal float, the exact form the compiler re-parses.
+// Formatting and reading back must preserve every bit, including signed zero.
 std::string get_float_source(const float value) {
     return std::format(
         "extern \"C\" __global__ void template_float_kernel(float* output) {{\n"
@@ -234,11 +229,9 @@ fs::path get_cache_root() {
     return fs::path(value == nullptr ? "/tmp/deep_jit_maca_test" : value);
 }
 
-// Publish one `DiskCache` entry through the writer protocol (stage, then
-// commit) behind a file barrier; several processes run this at once, and the
-// driver asserts they agree on one published directory.  `commit()` is the
-// only place atomicity can be observed, so this drives `DiskCache` directly
-// rather than a compile -- no compiler or device is involved.
+// Publish one `DiskCache` entry behind a file barrier; several processes run
+// this concurrently and must agree on one published directory.  No compiler
+// or device is involved.
 int run_publish_once(const std::string& cache_root, const std::string& owner,
                      const fs::path& ready_path, const fs::path& start_path) {
     try {
@@ -448,12 +441,9 @@ void test_toolkit_discovery(const fs::path& cache_root) {
         "mxcc compiler is not executable");
     unset_env("INVALID_TOOLKIT_JIT_MXCC_COMPILER");
 
-    // The compiler bin directory and the install-root precedence chain:
-    // `MACA_CLANG_PATH` (bin dir) > `MACA_PATH` > `CUDA_HOME` > `CUDA_PATH` >
-    // `mxcc` on PATH, with `/opt/maca` only as the last resort.  `MACA_HOME`
-    // is deliberately not consulted -- no MXMACA install defines it.  These
-    // name an installation rather than a library setting, so discovery reads
-    // them UNPREFIXED -- the test drives the raw environment and restores it.
+    // Discovery order: MACA_CLANG_PATH > MACA_PATH > CUDA_HOME > CUDA_PATH >
+    // PATH > /opt/maca.  These names are unprefixed and MACA_HOME is unused,
+    // so the test drives and restores the raw environment.
     const std::array<std::string, 5> discovery_names =
         {"MACA_CLANG_PATH", "MACA_PATH", "CUDA_HOME", "CUDA_PATH", "PATH"};
     std::array<std::optional<std::string>, 5> saved_discovery;
@@ -581,10 +571,8 @@ void test_device_properties(Runtime& runtime) {
     DJ_HOST_ASSERT(runtime.device.get_clock_rate() == runtime.device.get_clock_rate(),
                    "MACA clock rate was not cached");
 
-    // The mc-major -> xcore-family mapping is spelled out HERE as literals.
-    // Comparing the offload target to `get_family()` would be `f(x) == f(x)`:
-    // `get_arch()` is defined as the family's digits, so a wrong `case` label
-    // in that switch would satisfy both sides and go unnoticed.
+    // Spell the mapping out as literals: comparing against `get_family()`
+    // would make a wrong `case` label satisfy both sides.
     const auto expected_arch = [](const int mc_major) -> std::string_view {
         switch (mc_major) {
             case 10: return "1000";
@@ -617,13 +605,8 @@ void test_options(Runtime& runtime) {
     };
     DJ_HOST_ASSERT(defaults.get_flags() == expected, "unexpected default mxcc flag order");
 
-    // Each structured option has to emit the flag it means to.  The digest
-    // axis only proves that setting an option CHANGES the flags, so a mangled
-    // spelling would satisfy every other case while the kernel silently
-    // stopped being built with the option.  `-use-fast-math` is the spelling
-    // mxcc documents (`mxcc --help`) and honours -- measured on this platform,
-    // a float kernel with 5 divides keeps 1 of them under the flag and its
-    // device binary differs (24168 against 24160 bytes).
+    // Each structured option must emit the exact flag mxcc expects; the
+    // digest only proves that setting an option changes something.
     const std::vector<std::string> expected_fast_math = {
         "--offload-arch=xcore" + *defaults.arch,
         "-O3",
@@ -633,8 +616,8 @@ void test_options(Runtime& runtime) {
     const auto fast_math_flags = defaults.override_with(CompilerOptions {.fast_math = true}).get_flags();
     DJ_HOST_ASSERT(fast_math_flags == expected_fast_math, "fast_math did not emit -use-fast-math");
 
-    // `ptxas_verbose` is CUDA's spelling of `compiler_verbose`: overriding
-    // with it has to survive the port and produce the same flag.
+    // `ptxas_verbose` is an alias of `compiler_verbose`: overriding with it
+    // has to produce the same flag.
     const auto by_alias = defaults.override_with(CompilerOptions {.ptxas_verbose = true});
     const auto by_canonical = defaults.override_with(CompilerOptions {.compiler_verbose = true});
     const auto alias_flags = by_alias.get_flags();
@@ -1036,11 +1019,8 @@ void test_jit_vector_add(Runtime& runtime) {
 }
 
 void test_multiple_kernels_rejected(Runtime& runtime) {
-    // The load path names the entry point, so both ends of the count matter:
-    // an artifact with two kernels and one with none.  Compiling such a source
-    // is not itself an error -- the artifact is written either way -- so the
-    // refusal belongs to the load, and each rejection is preceded by the
-    // successful compile that proves it.
+    // Compiling is not the error; loading is.  Both zero and two kernels are
+    // refused, each after a successful compile of the same source.
     const auto no_kernel_source = get_source("no_kernel.cu");
     check_artifact(runtime.compile_without_load("no_kernel", no_kernel_source), no_kernel_source);
     expect_failure([&] { (void)runtime.compile("no_kernel", no_kernel_source); },
@@ -1097,11 +1077,8 @@ void test_dump_and_launch_overhead(Runtime& runtime) {
     DJ_HOST_ASSERT(fs::is_regular_file(artifact / "kernel.s"), "missing device assembly dump");
     DJ_HOST_ASSERT(fs::file_size(artifact / "kernel.s") > 0, "empty device assembly dump");
 
-    // What a launch costs on the CPU -- with the GIL taken and released around
-    // each one -- measured the way the CUDA harness measures it: 100 warmup
-    // launches, then five rounds of 10000, each round timed on the CPU and
-    // followed by a device sync.  MACA had no launch-overhead figure anywhere,
-    // so this is the baseline a launch-path change is compared against.
+    // CPU launch overhead: 100 warmup launches, then five rounds of 10000,
+    // each timed on the CPU and followed by a device sync.
     const auto kernel = runtime.compile("launch_overhead", get_source("launch_overhead.cu"));
     const LaunchOptions launch_options {
         .grid_dim = dim3(1, 1, 1),
@@ -1125,15 +1102,11 @@ void test_dump_and_launch_overhead(Runtime& runtime) {
     }
 
     std::ranges::sort(samples);
-    std::printf("MACA launch CPU overhead with GIL: median %.3f us, min %.3f us\n",
+    std::printf("MACA launch CPU overhead: median %.3f us, min %.3f us\n",
                 samples[num_rounds / 2], samples.front());
 
-    // A tripwire, not a performance gate: the number is the payload and is
-    // compared against a baseline by hand, as on CUDA.  What this catches is a
-    // launch path that started reloading the module or synchronising the
-    // device per launch -- orders of magnitude above the a-few-microsecond
-    // cost -- while sitting far enough above it that a loaded machine cannot
-    // make it flake.
+    // A tripwire, not a performance gate: catches a launch path that reloads
+    // the module or synchronises the device on every call.
     DJ_HOST_ASSERT(samples.front() < 1000.0,
                    "one launch costs {:.3f} us on the CPU: the launch path is doing device work",
                    samples.front());
@@ -1147,10 +1120,8 @@ void test_launch_option_validation(Runtime& runtime) {
     expect_failure([&] { runtime.launch(kernel, {.grid_dim = dim3(1, 1, 1)}, nullptr, 0); },
                    "block dimension must be specified");
 
-    // Every option that describes the launch must actually be named: unset is
-    // not "use a default" on this path, it is a refusal, and each one is
-    // refused by name.  `stream` is the deliberate exception -- unset means the
-    // current stream -- so it is the seven below, not eight.
+    // Unset is a refusal for every option except `stream`, which defaults to
+    // the current stream; each is refused by name.
     const auto complete = [] {
         return LaunchOptions {
             .num_smem_bytes = 0,
@@ -1175,12 +1146,8 @@ void test_launch_option_validation(Runtime& runtime) {
     expect_missing(&LaunchOptions::enable_pdl, "PDL option must be specified");
     expect_missing(&LaunchOptions::nonportable_cluster_size_allowed, "non-portable cluster option must be specified");
 
-    // Cluster launch and PDL are the axes MACA genuinely does not implement:
-    // any attribute other than the cooperative flag makes
-    // `mcModuleLaunchKernelEx` fail with mcErrorInvalidConfiguration ("Only
-    // Cooperative features are supported, others are not").  They are
-    // rejected up front with a clear message rather than surfacing as an
-    // opaque driver error code.
+    // MACA honours only the cooperative attribute; cluster launch and PDL are
+    // rejected up front with a clear message.
     const auto launch_with = [&](const LaunchOptions& overrides) {
         auto options = runtime.default_launch_options;
         options.grid_dim = dim3(1, 1, 1);
@@ -1198,9 +1165,7 @@ void test_launch_option_validation(Runtime& runtime) {
         kernel->launch(options, nullptr, 0);
     };
 
-    // The scalar validation that guards every launch: an option that does not
-    // describe a launchable configuration is refused before it reaches the
-    // driver, whoever set it.
+    // Invalid launch dimensions are refused before reaching the driver.
     expect_failure([&] { launch_with(LaunchOptions {.num_smem_bytes = -1}); },
                    "must not be negative");
     expect_failure([&] { launch_with(LaunchOptions {.grid_dim = dim3(0, 1, 1)}); },
@@ -1213,9 +1178,8 @@ void test_launch_option_validation(Runtime& runtime) {
                    "does not support cluster launch");
     expect_failure([&] { launch_with(LaunchOptions {.enable_pdl = true}); },
                    "does not support programmatic dependent launch");
-    // Both rejections are unconditional: the backend reads no environment flag
-    // here, because the only outcome of bypassing the check would be the same
-    // driver failure (`mcErrorInvalidConfiguration`) one layer down.
+    // The rejections are unconditional: bypassing them only reproduces the
+    // same driver failure one layer down.
 
     // Dynamic shared memory and the cooperative flag *are* supported and must
     // still reach the driver successfully.
@@ -1235,13 +1199,8 @@ void test_launch_option_validation(Runtime& runtime) {
 }
 
 void test_large_dynamic_shared_memory(Runtime& runtime) {
-    // A kernel whose dynamic shared-memory request exceeds the default
-    // per-block limit must launch on the `mcLaunchConfigExtension::
-    // sharedMemBytes` field alone -- no function-attribute call is needed on
-    // MACA (the launch enforces the `sharedMemPerBlockOptin` ceiling itself).
-    // 64 KiB is the device maximum, so this is the strongest form of the
-    // proof: if the field were ignored, or if a ceiling attribute were
-    // required, this launch would be refused.
+    // A request for the device's full opt-in shared memory must succeed on
+    // the `sharedMemBytes` field alone; no attribute call is needed.
     const auto source = get_source("large_dynamic_shared_memory.cu");
     const auto kernel = runtime.compile("large_smem", source);
     const int device_max = runtime.device.get_num_smem_bytes();
@@ -1356,13 +1315,9 @@ void test_mixed_arguments(Runtime& runtime) {
     DJ_MACA_RUNTIME_CHECK(mcMemcpy(&result, device_output, sizeof(float), mcMemcpyDeviceToHost));
     DJ_HOST_ASSERT(result == 384.75f, "mixed kernel arguments produced the wrong value: {}", result);
 
-    // The same call through `NoRefPtr`, which hands the driver the pointer
-    // itself as the argument's storage.  For a pointer-sized argument this is
-    // observably the same value as the plain form -- the wrapper's address
-    // holds the same bytes the plain form's storage does -- so what this
-    // launch proves is that the wrapper is ACCEPTED here, not that it changes
-    // what the driver reads.  That property needs an argument wider than the
-    // wrapper, and is proven in `large kernel arguments`.
+    // `NoRefPtr` hands the driver the pointer itself as argument storage.
+    // Here it only proves the wrapper is accepted; the wider-argument case is
+    // covered by `large kernel arguments`.
     int* input_argument = device_input;
     runtime.launch(kernel, {.grid_dim = dim3(1, 1, 1), .block_dim = dim3(1, 1, 1)},
                    device_output, 1, 2.5f, 4.25, static_cast<long long>(8), static_cast<short>(16),
@@ -1399,17 +1354,8 @@ void test_resource_usage_checks(Runtime& runtime) {
     const auto clean = runtime.compile_without_load("resource_checks_clean", get_source("scalar_increment.cu"), both_checks);
     DJ_HOST_ASSERT(fs::is_regular_file(clean / "kernel.devbin"));
 
-    // ... and a kernel with a large per-thread frame is rejected, by either
-    // knob.  The two coincide on MACA, and this is measured, not assumed: an
-    // 8 KiB-frame kernel's whole `-resource-usage` report is
-    //
-    //   maca info  : Function properties for  spill_kernel
-    //     8200 bytes stack frame
-    //   maca info  : Used  36 MTregisters, 38 STregisters, 0 bytes shared mem
-    //   maca info  : staticMaxWarps/PEU : 8
-    //
-    // -- there is no local-memory line for a CUDA-style regex to match, which
-    // is why `check_no_local_memory` validates the frame size too.
+    // ... and a kernel with a large per-thread frame is rejected by either
+    // knob: mxcc reports no separate local-memory figure on MACA.
     const auto spill_source = get_source("local_frame.cu");
     expect_failure([&] { (void)runtime.compile_without_load("resource_checks_spill", spill_source, spill_check); },
                    "mxcc reported a non-empty stack frame");
@@ -1450,9 +1396,8 @@ void test_post_hook(Runtime& runtime, const fs::path& cache_root) {
                        std::string::npos,
                    "metadata does not record the post hook");
 
-    // The hook edits the artifact in place, and that edit is what gets
-    // published.  Without this the case cannot tell a runtime that runs the
-    // hook from one that runs it and then throws its work away.
+    // The hook edits the artifact in place, so the published file must carry
+    // the edit.
     const auto marker = deep_jit::read(artifact / "kernel.devbin");
     DJ_HOST_ASSERT(marker.find("DJ_POST_HOOK_MARKER") != std::string::npos,
                    "the post hook's edit of the device binary was not published");
@@ -1599,11 +1544,8 @@ void test_invalid_cache_tag(Runtime& runtime) {
                    "cache tag must contain only letters, digits, or underscores");
 }
 
-// A float literal formatted into kernel source must recompile to the same
-// bits.  This guards the fmt port specifically: DeepJIT formats through fmt
-// rather than `<format>`, and the hexadecimal-float form is what makes a
-// changed rounding or sign handling observable (`0.0f` and `-0.0f` differ only
-// in the formatted sign).
+// A formatted float literal must recompile to the same bits.  The hexadecimal
+// form makes rounding and sign-handling changes observable.
 void test_generated_float_literals(Runtime& runtime, const fs::path& cache_root) {
     const auto float_cache = cache_root / "generated_float_literals";
     set_env("FLOAT_LITERAL_JIT_CACHE_DIR", float_cache.string());
@@ -1673,12 +1615,9 @@ void test_architecture_override(Runtime& runtime) {
                    "the offload target is missing from the recorded command");
 }
 
-// Every xcore family is a separate mxcc offload target, and mxcc produces an
-// artifact for any of them regardless of which device is installed -- measured
-// on a C500 (xcore1000) host, `--offload-arch=xcore1500` and `=xcore1600` both
-// compile.  So the whole family matrix is verifiable on a single machine; only
-// the installed family's artifact can be *loaded*, which is why this case stops
-// at compilation.
+// Every xcore family is a separate offload target, and mxcc can compile for
+// any of them regardless of the installed device.  Only the installed
+// family's artifact can be loaded, so this case stops at compilation.
 void test_cross_family_compilation(Runtime& runtime, const fs::path& cache_root) {
     const std::array<std::string, 3> families = {"1000", "1500", "1600"};
     const auto native_arch = runtime.device.get_arch();
@@ -1742,12 +1681,9 @@ void test_multiple_runtimes(const fs::path& cache_root) {
     DJ_HOST_ASSERT(runtime_b->mem_cache.cache.empty(), "one runtime populated another runtime's memory cache");
     DJ_HOST_ASSERT(launch_value(*runtime_b, runtime_b->compile("runtime_isolation", source)) == 29);
 
-    // The toolkit is resolved per load, not carried on the backend: MACA finds
-    // the entry-point name with `llvm-nm` out of the toolkit, so a runtime that
-    // borrowed another's would be reading a different toolchain's binary.
-    // Runtime B gets an `llvm-nm` that records that it ran and then delegates
-    // to the real one, and B is constructed LAST -- the order that matters if
-    // the toolkit were published to a process-global by the constructor.
+    // The toolkit is resolved per load: runtime B gets an `llvm-nm` that
+    // records that it ran, and is constructed last, so a process-global set
+    // by the constructor would be caught here.
     const auto toolkit_marker = cache_root / "runtime_b_llvm_nm_ran";
     const auto llvm_nm_shim = cache_root / "llvm_nm_shim";
     write_executable(llvm_nm_shim,
@@ -2023,10 +1959,8 @@ void test_kernel_lifecycle(const fs::path& cache_root) {
     expect_failure([&] { (void)deep_jit::MACA::load(missing_dir, runtime->env); },
                    "missing MACA device binary");
 
-    // Bytes that are not a device binary at all: the refusal arrives from
-    // whichever layer notices first -- the tool that reads the artifact exits
-    // non-zero, or it finds nothing to name -- so either message is a correct
-    // outcome and neither a driver-level nor an unrelated failure is.
+    // Not a device binary at all: either the reader exits non-zero or it finds
+    // nothing to name.  Both refusals are acceptable.
     const auto invalid_dir = cache_root / "invalid_devbin";
     deep_jit::make_dirs(invalid_dir);
     deep_jit::write_file_sync(invalid_dir / "kernel.devbin", "not a device binary");
@@ -2152,13 +2086,9 @@ void test_include_dirs(const fs::path& cache_root) {
     const auto runtime_original = make_runtime(include_original);
     const auto runtime_same_content = make_runtime(include_same_content);
     const auto runtime_changed_content = make_runtime(include_changed_content);
-    // The one-byte difference sits one level DOWN, in the header that the
-    // tracked value header includes: the two root headers are byte-identical,
-    // so the two artifacts can only differ if the parser descends recursively
-    // (the compiler-side witness of the same descent is `launch_value` below,
-    // 12 against 13).  A difference in the root header would make this case
-    // pass without the recursion ever being exercised, so the root equality is
-    // asserted too.
+    // The difference sits one level down: the root headers are byte-identical,
+    // so only a recursive parse can change the digest.  `launch_value` below
+    // witnesses the same descent on the compiler side.
     DJ_HOST_ASSERT(deep_jit::read(include_original / "test_maca/tracked_include_value.hpp") ==
                        deep_jit::read(include_changed_content / "test_maca/tracked_include_value.hpp"),
                    "the tracked include fixture must differ below the root header, not in it");
@@ -2467,10 +2397,8 @@ void test_library_environment_compatibility(Runtime& runtime, const fs::path& ca
     unset_env("JIT_CPP_STANDARD");
     unset_env("JIT_CHECK_NO_SPILLS");
 
-    // The remaining knobs the backend reads -- the resource report, line
-    // information, the assembly dump and the CUDA `JIT_DUMP_PTX` alias that
-    // feeds it -- must reach the defaults through the same chain, and must
-    // also reach the flags they are supposed to generate.
+    // The remaining knobs must reach the defaults and generate their flags;
+    // the `JIT_DUMP_PTX` alias feeds the assembly dump.
     set_env("DJ_JIT_PTXAS_VERBOSE", "1");
     set_env("DJ_JIT_WITH_LINEINFO", "1");
     set_env("DJ_JIT_DUMP_PTX", "1");
@@ -2551,12 +2479,9 @@ void test_template_hash_and_launch(Runtime& runtime) {
 
 void test_cooperative_launch(Runtime& runtime) {
     constexpr unsigned int num_blocks = 2;
-    // A cooperative launch requires every block to be resident at once, so a
-    // grid of 1<<20 blocks can never co-reside on any current device.  That
-    // makes the pair below device-independent, and it is the whole point of
-    // the case: the *same* grid is accepted plainly and refused
-    // cooperatively.  Without it a backend that silently dropped the
-    // attribute would still pass every other assertion here.
+    // A 1<<20-block grid can never co-reside, so the same grid is accepted
+    // plainly and refused cooperatively on any device.  A backend that
+    // dropped the attribute would fail this case.
     constexpr unsigned int oversized_blocks = 1u << 20;
     const auto kernel = runtime.compile("cooperative_probe", get_source("cooperative_probe.cu"));
 
@@ -2584,10 +2509,8 @@ void test_cooperative_launch(Runtime& runtime) {
         DJ_HOST_ASSERT(launch_and_read(false, num_blocks) == static_cast<int>(num_blocks),
                        "non-cooperative launch produced the wrong grid");
 
-        // The cooperative attribute is the one launch attribute the MACA
-        // runtime honours; everything else is refused up front (see
-        // `test_launch_option_validation`).  A cooperative grid that fits is
-        // accepted and runs with the grid shape it asked for.
+        // The cooperative attribute is the only one MACA honours; a grid that
+        // fits is accepted and runs with the requested shape.
         DJ_HOST_ASSERT(launch_and_read(true, num_blocks) == static_cast<int>(num_blocks),
                        "cooperative launch produced the wrong grid");
 
@@ -2846,11 +2769,8 @@ void test_backend_output_validation(Runtime& runtime, const fs::path& cache_root
     unset_env("METADATA_FAILURE_JIT_CACHE_DIR");
 }
 
-// Two devices, two runtimes.  The point is not that both launch -- it is that
-// a runtime keeps the device it was built on: its properties must not follow
-// the process current device, while the disk cache still follows the
-// architecture, so two devices of the same family share an entry and two of
-// different families do not.  Returns false (a skip) on a single-device host.
+// A runtime keeps the device it was built on, while the disk cache follows
+// the architecture.  Returns false (a skip) on a single-device host.
 bool test_multiple_devices(const fs::path& cache_root) {
     int num_devices = 0;
     DJ_MACA_RUNTIME_CHECK(mcGetDeviceCount(&num_devices));
@@ -2944,9 +2864,7 @@ int run_compile_once(const std::string& tag, const int bias,
 }
 
 // One compile/load/launch with diagnostics enabled from the environment; the
-// Python driver asserts on the printed compiler and load reports.  The cache
-// root is left as it is, so running this twice over one root exercises the
-// cache-hit path.
+// Python driver asserts on the reports and checks the cache-hit path.
 int run_diagnostics() {
     const auto cache_root = get_cache_root();
     deep_jit::make_dirs(cache_root);
@@ -2975,8 +2893,8 @@ int main(int argc, char** argv) {
 
     const auto runtime = make_runtime(get_test_maca_project_dir() / "kernels");
 
-    // Case names follow the CUDA and Ascend harnesses ("<subject> <aspect>",
-    // spaces) so the same case can be located across the three.
+    // Case names follow the "<subject> <aspect>" convention (spaces) so a case
+    // can be located by name.
     run_test("environment precedence", [&] { test_environment(cache_root); });
     run_test("configuration", [&] { test_config(); });
     run_test("filesystem utilities", [&] { test_filesystem(cache_root); });
@@ -3031,10 +2949,8 @@ int main(int argc, char** argv) {
     run_test("large dynamic shared memory", [&] { test_large_dynamic_shared_memory(*runtime); });
     run_test("multiple devices", [&] { return test_multiple_devices(cache_root); });
 
-    // Nothing may be left half-published behind the suite.  The JIT cache root
-    // is `<cache_root>/cache` (see the `TEST_JIT_CACHE_DIR` above) and
-    // `DiskCache` stages under `<jit_cache_root>/tmp`, so the directory to
-    // inspect is the one below, not `cache_root` itself.
+    // Nothing may be left half-published: `DiskCache` stages under
+    // `<jit_cache_root>/tmp`, not under `cache_root` itself.
     check_tmp_is_empty(cache_root / "cache");
 
     std::printf("\nAll MACA DeepJIT tests passed.\n");

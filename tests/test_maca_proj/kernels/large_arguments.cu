@@ -1,16 +1,6 @@
-// A kernel whose parameter block is deliberately large: 1 KiB by value, then
-// eighteen 128-byte opaque arguments by value, then an indirectly-passed
-// payload and a null pointer.  The opaque arguments stand in for the CUDA
-// harness's `CUtensorMap`s (MACA has no tensor map type) -- what is under test
-// is the argument-passing ABI and the parameter block size, not what the bytes
-// mean.  CUDA marks the by-value aggregates `__grid_constant__`; MACA has no
-// such qualifier, which is itself part of what this case covers.
-//
-// NOTE: the arguments are folded straight out of the parameter block.  Copying
-// them into a local array first puts ~2.3 KiB into per-thread *private* memory,
-// and this MACA platform caps that at 4 KiB/thread, so the launch is refused
-// with mcErrorMemoryValueTooLarge ("kernel request: 5 KB/thread") before the
-// kernel ever runs.  Keep the fold inline.
+// Large parameter block: 1 KiB by value, eighteen 128-byte opaque arguments,
+// then an indirect payload and a null pointer.  Keep the fold inline: copying
+// into a local array exceeds the per-thread private-memory limit.
 struct OpaqueArgument {
     unsigned char bytes[128];
 };

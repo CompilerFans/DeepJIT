@@ -4,10 +4,16 @@ import tempfile
 import traceback
 from pathlib import Path
 
+import tvm_ffi
 from torch.utils.cpp_extension import load_inline
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def tvm_ffi_paths():
+    libdir = Path(tvm_ffi.libinfo.find_libtvm_ffi()).resolve().parent
+    return [str(Path(path).resolve()) for path in tvm_ffi.libinfo.include_paths()], libdir
 
 
 def extra_include_paths():
@@ -35,14 +41,14 @@ def extra_include_paths():
 
 CPP_SOURCE = r'''
 #line 1 "embedded_exception_test.cpp"
-#include <pybind11/pybind11.h>
+#include <tvm/ffi/function.h>
 
 #include <deep_jit/utils/exception.hpp>
 
 namespace deep_jit::exception_test {
 
 __attribute__((noinline, visibility("default"))) void panic_leaf() {
-    DJ_PANIC("test failure from pybind11");
+    DJ_PANIC("test failure from tvm-ffi");
 }
 
 __attribute__((noinline, visibility("default"))) void panic_middle() {
@@ -55,9 +61,7 @@ __attribute__((noinline, visibility("default"))) void panic_entry() {
 
 }  // namespace deep_jit::exception_test
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
-    module.def("raise_exception", &deep_jit::exception_test::panic_entry);
-}
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(raise_exception, &deep_jit::exception_test::panic_entry);
 '''
 
 
@@ -66,8 +70,9 @@ def python_entry(module):
 
 
 def main() -> None:
+    includes, libdir = tvm_ffi_paths()
     with tempfile.TemporaryDirectory(prefix='deep-jit-exception-') as directory:
-        module = load_inline(
+        module_path = load_inline(
             name='deep_jit_exception_test',
             cpp_sources=CPP_SOURCE,
             extra_cflags=[
@@ -76,26 +81,33 @@ def main() -> None:
                 '-g1',
                 '-fno-omit-frame-pointer',
                 '-fno-optimize-sibling-calls',
+                # tvm-ffi's export macro leaves an unused parameter in its
+                # generated wrapper; treat its headers as system headers.
+                *(f'-isystem{path}' for path in includes),
             ],
             extra_include_paths=extra_include_paths(),
+            extra_ldflags=[f'-L{libdir}', '-ltvm_ffi', f'-Wl,-rpath,{libdir}', '-ldl'],
             build_directory=directory,
             with_cuda=False,
+            is_python_module=False,
+            no_implicit_headers=True,
             verbose=True,
         )
+        module = tvm_ffi.load_module(str(module_path))
 
         try:
             python_entry(module)
         except RuntimeError:
             python_traceback = traceback.format_exc()
         else:
-            raise AssertionError('the pybind11 call did not raise RuntimeError')
+            raise AssertionError('the tvm-ffi call did not raise RuntimeError')
 
         print(python_traceback, file=sys.stderr, end='')
         assert 'Traceback (most recent call last):' in python_traceback
         assert 'in python_entry' in python_traceback
         assert (
             'RuntimeError: Panic error (embedded_exception_test.cpp:8): '
-            'test failure from pybind11\n'
+            'test failure from tvm-ffi\n'
             'C++ trace (most recent call first):\n'
         ) in python_traceback
         assert 'deep_jit::exception_test::panic_leaf()' in python_traceback

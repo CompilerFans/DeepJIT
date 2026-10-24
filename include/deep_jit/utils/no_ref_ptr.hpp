@@ -2,11 +2,9 @@
 
 namespace deep_jit {
 
-// Wrap an argument so that the driver takes `ptr` itself as the location of
-// the argument value instead of taking the address of the wrapper.  `ptr` must
-// therefore point at host memory holding the argument, never at the device
-// buffer the argument happens to name: passing a device address makes the
-// driver read the argument value out of device memory and faults.
+// `ptr` already points at the argument value on the host, so the driver must
+// use it directly instead of taking the wrapper's address.  It must never name
+// a device buffer: the driver would read the value out of device memory.
 struct NoRefPtr {
     void* ptr = nullptr;
 };

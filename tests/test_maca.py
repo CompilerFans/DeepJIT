@@ -1,11 +1,7 @@
 """DeepJIT MACA backend end-to-end test.
 
-Builds the test extension with the C++20 host toolchain, then drives the
-registered JIT runtime: mxcc compiles the kernel source, `mcModuleLoad`
-loads the resulting device binary and the kernel runs on the C500.
-
-Run with the MACA environment sourced (MACA_PATH, LD_LIBRARY_PATH including
-`$MACA_PATH/lib` and `$MACA_PATH/mxgpu_llvm/lib`).
+Run with the MACA environment sourced: MACA_PATH and LD_LIBRARY_PATH must
+include `$MACA_PATH/lib` and `$MACA_PATH/mxgpu_llvm/lib`.
 """
 import json
 import os
@@ -50,13 +46,10 @@ def maca_path():
 
 
 def host_toolchain():
-    """Root of the conda host toolchain that builds the harness.
+    """Root of the host toolchain that builds the harness.
 
-    `MACA_TOOLCHAIN` names it directly; otherwise it is derived from the
-    compiler named by `MACA_HOST_CXX`/`CXX` (both live at `<root>/bin/clang++-22`,
-    the spelling the CUDA driver uses for its `CXX`).  The in-image default is
-    only a default -- every path here is overridable from the environment -- and
-    a toolchain that cannot be found is a hard error, never a skipped check.
+    `MACA_TOOLCHAIN` names it directly; otherwise it is derived from
+    `MACA_HOST_CXX`/`CXX`.
     """
     root = os.environ.get('MACA_TOOLCHAIN')
     if root is None:
@@ -66,8 +59,7 @@ def host_toolchain():
                 resolved = Path(shutil.which(compiler) or compiler).resolve()
                 root = resolved.parent.parent
                 break
-    if root is None:
-        root = '/home/compiler_gfx/gpu_model/tools/hipcc'
+    assert root is not None, 'set MACA_TOOLCHAIN (or MACA_HOST_CXX/CXX) to a host toolchain'
     root = Path(root)
     assert (root / 'bin/clang++-22').is_file(), \
         f'no usable MACA host toolchain at {root}: set MACA_TOOLCHAIN'
@@ -75,12 +67,7 @@ def host_toolchain():
 
 
 def gcc_limits_include(toolchain):
-    """GCC's own limits.h, which the sysroot's limits.h delegates to.
-
-    It ships in the `llvm` tree beside the toolchain rather than inside it
-    (the toolchain has the C++ headers but no limits.h of its own), so it is
-    located by glob rather than by a pinned version.
-    """
+    """GCC's limits.h, which the sysroot's limits.h delegates to."""
     explicit = os.environ.get('GCC_LIMITS_INCLUDE')
     if explicit:
         return Path(explicit)
@@ -91,14 +78,7 @@ def gcc_limits_include(toolchain):
 
 
 def gcc_tree(toolchain):
-    """The conda toolchain's GCC tree, located by version glob.
-
-    `build.sh` derives the same directory the same way.  Pinning the version
-    would not fail loudly: clang accepts a nonexistent `-isystem` directory
-    without a word, so a stale pin silently drops the C++ standard-library
-    search paths and the self-containment check then fails with a cascade of
-    unrelated missing-header errors.
-    """
+    """The toolchain's GCC tree, located by version glob like `build.sh`."""
     base = toolchain / 'lib' / 'gcc' / 'x86_64-conda-linux-gnu'
     candidates = sorted(path for path in base.glob('*') if path.is_dir())
     assert candidates, f'no GCC tree under {base}: set MACA_TOOLCHAIN'
@@ -114,11 +94,13 @@ def clear_external_jit_environment():
 
 
 def build_harness(temporary_dir):
-    """Build the standalone C++ harness (the MACA analogue of test_cuda_proj)."""
+    """Build the standalone C++ harness."""
     output = temporary_dir / 'test_maca'
+    environment = dict(os.environ)
+    environment.setdefault('MACA_TOOLCHAIN', str(host_toolchain()))
     subprocess.run(
         ['bash', str(TEST_MACA_PROJECT / 'build.sh'), str(output)],
-        check=True, cwd=str(ROOT))
+        check=True, cwd=str(ROOT), env=environment)
     return output
 
 
@@ -216,13 +198,7 @@ def validate_header_self_containment(temporary_dir):
 
 
 def fmt_root():
-    """The root of the fmt checkout DeepJIT's headers format through.
-
-    DeepJIT goes through fmt instead of `<format>` so that it stays embeddable
-    on host toolchains whose C++20 library predates `<format>` (MACA's mxcc
-    drives GCC 11, which has none).  Consuming repositories vendor fmt as a
-    sibling checkout; `FMT_ROOT` overrides it.
-    """
+    """Root of the fmt checkout used by the headers; `FMT_ROOT` overrides it."""
     return Path(os.environ.get('FMT_ROOT') or ROOT.parent / 'fmt')
 
 

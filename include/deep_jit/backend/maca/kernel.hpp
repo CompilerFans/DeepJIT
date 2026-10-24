@@ -19,7 +19,6 @@
 #include <deep_jit/utils/exception.hpp>
 #include <deep_jit/utils/filesystem.hpp>
 #include <deep_jit/utils/format.hpp>
-#include <deep_jit/utils/gil.hpp>
 #include <deep_jit/utils/no_ref_ptr.hpp>
 
 namespace deep_jit::maca {
@@ -49,15 +48,9 @@ public:
     Kernel(Kernel&&) = delete;
     Kernel& operator=(Kernel&&) = delete;
 
-    // MACA has no driver-side kernel *enumeration*: `mcLibraryGetKernelCount`,
-    // `mcLibraryEnumerateKernels`, `mcLibraryLoadFromFile`,
-    // `mcKernelGetFunction`, `mcModuleGetFunctionCount` and
-    // `mcModuleEnumerateFunctions` are all absent from libmcruntime.so
-    // (verified with `nm -D`), so the entry point name is recovered from the
-    // device artifact itself with the toolchain's `llvm-nm` -- the same route
-    // the host project's kernel JIT takes.  Filtering mirrors that
-    // implementation: the toolchain's own bookkeeping symbols and compiler
-    // runtime stubs are skipped, leaving the user's `extern "C"` entry point.
+    // MACA has no driver-side kernel enumeration, so the entry point is
+    // recovered from the device binary with `llvm-nm`; toolchain bookkeeping
+    // and runtime stubs are filtered out.
     static std::vector<std::string> parse_kernel_names(const std::filesystem::path& llvm_nm,
                                                        const std::filesystem::path& path) {
         const auto output = call_external_command(
@@ -111,22 +104,16 @@ public:
     static std::shared_ptr<Kernel> load(const std::filesystem::path& dir,
                                         const Env& env,
                                         const std::filesystem::path& llvm_nm) {
-        // Release GIL to let other Python threads run
-        [[maybe_unused]] GilScopedRelease gil_release;
-
-        // Check existence
         const auto binary_path = dir / "kernel.devbin";
         if (not std::filesystem::is_regular_file(binary_path))
             DJ_PANIC("missing MACA device binary: {}", binary_path.string());
 
-        // Record start time
         const bool debug = env.get<bool>("JIT_DEBUG", false);
         const bool print_load_time = debug or env.get<bool>("JIT_PRINT_LOAD_TIME", false);
         if (debug)
             std::fputs(fmt::format("Loading MACA device binary: {}\n", binary_path.string()).c_str(), stdout);
         const auto start_time = std::chrono::steady_clock::now();
 
-        // Load kernel
         const auto kernel_names = parse_kernel_names(llvm_nm, binary_path);
         if (kernel_names.size() != 1)
             DJ_PANIC("expected exactly one kernel in {}, found {}: {}",
@@ -143,7 +130,6 @@ public:
             throw;
         }
 
-        // Print and return
         if (print_load_time) {
             const std::chrono::duration<double, std::milli> elapsed = std::chrono::steady_clock::now() - start_time;
             std::fputs(fmt::format("Load time ({}): {:.2f} ms\n", dir.string(), elapsed.count()).c_str(), stdout);
@@ -153,10 +139,6 @@ public:
 
     template <typename... Args>
     void launch(const LaunchOptions& launch_options, const Args&... args) const {
-        // Release GIL to let other Python threads run
-        [[maybe_unused]] GilScopedRelease gil_release;
-
-        // Checks
         DJ_HOST_ASSERT(kernel_handle != nullptr, "kernel must be loaded before launch");
         DJ_HOST_ASSERT(launch_options.num_smem_bytes.has_value(), "MACA dynamic shared-memory size must be specified");
         DJ_HOST_ASSERT(launch_options.grid_dim.has_value(), "MACA grid dimension must be specified");
@@ -175,38 +157,19 @@ public:
         DJ_HOST_ASSERT(launch_options.cluster_dim->y == 1 and launch_options.cluster_dim->z == 1,
                        "only one-dimensional MACA clusters are supported");
 
-        // NOTE: unlike CUDA, MACA needs no `cuFuncSetAttribute` call to raise
-        // the dynamic shared-memory ceiling -- measured on C500, a launch of
-        // up to `sharedMemPerBlockOptin` (64 KiB) succeeds with the attribute
-        // never set, and anything above it is refused at launch with
-        // mcErrorInvalidValue ("Shared memory size error ... in device
-        // 65536").  The ceiling is enforced by the launch itself, so the
-        // maximum-dynamic-shared-memory attribute is deliberately not set:
-        // the runtime entry that accepts a `mcFunction_t` is not in
-        // libmcruntime.so (the `cuFuncSetAttribute` spelling lives in
-        // libsymbol_cu.so, which this backend does not link), and the native
-        // `mcFuncSetAttribute` rejects a function handle outright.  Adding
-        // the call would buy nothing but a new link dependency.
+        // The launch enforces the `sharedMemPerBlockOptin` ceiling itself, so
+        // no maximum-dynamic-shared-memory attribute call is needed or
+        // available for a module-loaded kernel.
 
-        // Build the launch attributes.  MACA accepts a *limited* attribute
-        // set: only the cooperative flag is honoured, and everything else is
-        // refused unconditionally -- measured on C500, the runtime reports
-        // "Only Cooperative features are supported, others are not" and
-        // returns mcErrorInvalidConfiguration for any other attribute,
-        // including a trivial 1x1x1 cluster.  Cluster launch and PDL are
-        // therefore rejected up front with a clear message rather than being
-        // handed to the driver to fail with an opaque code.  This is a MACA
-        // implementation limit, not a configuration that a flag can enable,
-        // so the rejection is unconditional (no escape hatch: the only
-        // outcome of bypassing it would be the same failure one layer down).
-        // `nonportable_cluster_size_allowed` has no MACA counterpart at all
-        // (neither a launch attribute nor a function attribute).
+        // Only the cooperative attribute is accepted; cluster launch and PDL
+        // are rejected up front rather than failing with an opaque driver
+        // error.  `nonportable_cluster_size_allowed` has no MACA counterpart.
         DJ_HOST_ASSERT(launch_options.cluster_dim->x == 1,
                        "MACA does not support cluster launch (mcErrorInvalidConfiguration)");
         DJ_HOST_ASSERT(not *launch_options.enable_pdl,
                        "MACA does not support programmatic dependent launch (mcErrorInvalidConfiguration)");
 
-        // NOTES: please enlarge the array size if you want more attributes
+        // Enlarge if more attributes are added.
         std::array<mcLaunchAttribute, 1> attributes{};
         unsigned int num_attributes = 0;
         if (*launch_options.cooperative) {
@@ -215,7 +178,6 @@ public:
             attribute.val.cooperative = 1;
         }
 
-        // Set launch config
         void* kernel_arg_ptrs[sizeof...(Args) + 1] = {kernel_arg_pointer(args)..., nullptr};
         mcLaunchConfigExtension config{};
         config.gridDimX = launch_options.grid_dim->x;
