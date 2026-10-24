@@ -4,7 +4,11 @@
 
 # `import tvm_ffi` is provided by the `apache-tvm-ffi` distribution.
 # Needed by tests/test_exception.py and by consumers of python_api.hpp.
-apache-tvm-ffi>=0.1.11,~=0.1.0
+# Keep the range aligned with the MetaX stack: tilelang 0.1.14+maca requires
+# apache-tvm-ffi >=0.1.11,<0.1.13, and the supported runtime is the
+# 0.1.11+maca build shipped in the same install package (the only variant
+# with the DLPack kDLMACA device type and the CUDA->MACA stream mapping).
+apache-tvm-ffi>=0.1.11,<0.1.13
 
 # Needed by tests/test_exception.py (its cpp_extension build).
 torch>=2.8.0
