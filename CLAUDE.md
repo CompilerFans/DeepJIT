@@ -9,11 +9,11 @@ with mxcc, caches the artifact in memory and on disk, loads it, and launches it.
 embed it by adding `include/` to their include path — there is no library to link (fmt is
 header-only too); only the optional `python_api.hpp` needs TVM FFI.
 
-This checkout is the `third-party/DeepJIT` git submodule of mcDeepGEMM (xcore C500/C600/C600U MACA
-project); it is its own repository (`git@github.com:CompilerFans/DeepJIT.git`, branch `main`).
-Commits made here need the parent repo's submodule pointer bumped separately. fmt is the sibling
-submodule `third-party/fmt` (pinned at 12.1.0) — that is what `FMT_ROOT`/`DEEP_JIT_FMT_ROOT`
-default to.
+This checkout is consumed as the `third-party/DeepJIT` git submodule of DeepSelect (a MACA top-K
+kernel library); DeepJIT is its own repository, with `main` as the branch, and commits made here
+need the consuming repository's submodule pointer bumped separately. fmt is the sibling directory
+`third-party/fmt` in the consuming checkout — a plain vendored source tree (12.1.0, not a
+submodule) — and is what `FMT_ROOT`/`DEEP_JIT_FMT_ROOT` default to.
 
 `README.md` is the authoritative API reference: options, cache-key composition, toolchain
 requirements, and the full environment-variable table. Read the relevant section before changing
