@@ -27,8 +27,9 @@ python tests/test_maca.py          # MACA: source the MACA env first (MACA_PATH,
                                    #   must include $MACA_PATH/lib and $MACA_PATH/mxgpu_llvm/lib)
 python tests/test_exception.py     # header-only check of the exception/backtrace path
 
-# Build just the MACA harness (host side is clang++-22 + a GCC-15 conda sysroot; mxcc is only
-# invoked later, at run time, by the JIT).
+# Build just the MACA harness.  With MACA_TOOLCHAIN set the host side is clang++-22 + a GCC-15
+# conda sysroot; unset, it falls back to the host g++ (11 is what mxcc itself drives).  mxcc is
+# only invoked later, at run time, by the JIT either way.
 bash tests/test_maca_proj/build.sh /tmp/djbuild/test_maca
 
 # CMake is for debugging / IDE indexing only. It builds a TVM FFI `_C` module and exists to
