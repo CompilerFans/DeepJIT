@@ -23,8 +23,10 @@ if not __debug__:
 
 ROOT = Path(__file__).resolve().parent.parent
 TEST_MACA_PROJECT = ROOT / 'tests' / 'test_maca_proj'
-# The only case allowed to report `[ SKIPPED ]`: it needs two devices.
-EXPECTED_SKIPS = {'multiple devices'}
+# The cases allowed to report `[ SKIPPED ]`: one needs two devices, the other
+# needs a driver that refuses an oversized cooperative grid (this MACA
+# generation accepts it and runs it in waves).
+EXPECTED_SKIPS = {'multiple devices', 'cooperative launch'}
 COMPILER_OPTION_SUFFIXES = (
     'JIT_CHECK_NO_LOCAL_MEMORY',
     'JIT_CHECK_NO_SPILLS',
@@ -45,44 +47,20 @@ def maca_path():
     return Path(os.environ.get('MACA_PATH') or '/opt/maca')
 
 
-def host_toolchain():
-    """Root of the host toolchain that builds the harness.
+def host_compiler():
+    """The host C++ compiler: the MACA SDK's `mxcc`.
 
-    `MACA_TOOLCHAIN` names it directly; otherwise it is derived from
-    `MACA_HOST_CXX`/`CXX`.
+    The SDK ships no separate `clang++`; `mxcc` is the clang driver it does
+    ship, and it compiles host C++ as readily as device code.  `MACA_HOST_CXX`
+    or `CXX` overrides it, for a host that wants its own compiler.
     """
-    root = os.environ.get('MACA_TOOLCHAIN')
-    if root is None:
-        for name in ('MACA_HOST_CXX', 'CXX'):
-            compiler = os.environ.get(name)
-            if compiler:
-                resolved = Path(shutil.which(compiler) or compiler).resolve()
-                root = resolved.parent.parent
-                break
-    assert root is not None, 'set MACA_TOOLCHAIN (or MACA_HOST_CXX/CXX) to a host toolchain'
-    root = Path(root)
-    assert (root / 'bin/clang++-22').is_file(), \
-        f'no usable MACA host toolchain at {root}: set MACA_TOOLCHAIN'
-    return root
-
-
-def gcc_limits_include(toolchain):
-    """GCC's limits.h, which the sysroot's limits.h delegates to."""
-    explicit = os.environ.get('GCC_LIMITS_INCLUDE')
-    if explicit:
-        return Path(explicit)
-    base = toolchain.parent / 'llvm' / 'lib' / 'gcc' / 'x86_64-conda-linux-gnu'
-    candidates = sorted(base.glob('*/include/limits.h'))
-    assert candidates, f'no GCC limits.h under {base}: set GCC_LIMITS_INCLUDE'
-    return candidates[-1].parent
-
-
-def gcc_tree(toolchain):
-    """The toolchain's GCC tree, located by version glob like `build.sh`."""
-    base = toolchain / 'lib' / 'gcc' / 'x86_64-conda-linux-gnu'
-    candidates = sorted(path for path in base.glob('*') if path.is_dir())
-    assert candidates, f'no GCC tree under {base}: set MACA_TOOLCHAIN'
-    return candidates[-1]
+    for name in ('MACA_HOST_CXX', 'CXX'):
+        value = os.environ.get(name)
+        if value:
+            return Path(shutil.which(value) or value).resolve()
+    compiler = maca_path() / 'mxgpu_llvm' / 'bin' / 'mxcc'
+    assert compiler.is_file(), f'no host compiler at {compiler}: set MACA_PATH (or CXX)'
+    return compiler
 
 
 def clear_external_jit_environment():
@@ -94,10 +72,17 @@ def clear_external_jit_environment():
 
 
 def build_harness(temporary_dir):
-    """Build the standalone C++ harness."""
+    """Build the standalone C++ harness.
+
+    `TORCH_ROOT` is set here because `build.sh` would otherwise shell out to
+    `python`, which need not be on PATH in a non-interactive shell.
+    """
     output = temporary_dir / 'test_maca'
     environment = dict(os.environ)
-    environment.setdefault('MACA_TOOLCHAIN', str(host_toolchain()))
+    environment.setdefault('TORCH_ROOT', str(Path(torch.__file__).resolve().parent))
+    environment.setdefault('MACA_PATH', str(maca_path()))
+    environment.setdefault('FMT_ROOT', str(fmt_root()))
+    environment.setdefault('CXX', str(host_compiler()))
     subprocess.run(
         ['bash', str(TEST_MACA_PROJECT / 'build.sh'), str(output)],
         check=True, cwd=str(ROOT), env=environment)
@@ -121,7 +106,8 @@ def run_harness(binary, temporary_dir):
     ran = cases('[ RUN      ')
     passed = cases('[       OK ]')
     skipped = cases('[  SKIPPED ]')
-    assert ran == passed + skipped, \
+    # Multiset, not list: a skip may sit anywhere in the run order.
+    assert sorted(ran) == sorted(passed + skipped), \
         f'case accounting mismatch: {len(ran)} ran, {len(passed)} ok, {len(skipped)} skipped'
     unexpected = sorted(set(skipped) - EXPECTED_SKIPS)
     assert not unexpected, f'unexpected skips: {unexpected}'
@@ -134,7 +120,7 @@ def harness_environment(temporary_dir):
     environment['DEEP_JIT_MACA_TEST_CACHE_DIR'] = str(temporary_dir / 'cache')
     environment.setdefault('MACA_PATH', str(maca_path()))
     library_path = environment.get('LD_LIBRARY_PATH', '')
-    for extra in (str(maca_path() / 'lib'), str(maca_path() / 'mxgpu_llvm/bin')):
+    for extra in (str(maca_path() / 'lib'), str(maca_path() / 'mxgpu_llvm/lib')):
         if extra not in library_path.split(':'):
             library_path = f'{extra}:{library_path}'
     environment['LD_LIBRARY_PATH'] = library_path
@@ -183,15 +169,16 @@ def validate_header_self_containment(temporary_dir):
     A missing toolchain is a failure, not a skip: silently dropping this check
     is how a header stops being self-contained without anyone noticing.
     """
-    compiler = host_toolchain() / 'bin' / 'clang++-22'
-    assert compiler.is_file(), f'no host compiler at {compiler}: set MACA_TOOLCHAIN'
+    compiler = host_compiler()
+    assert compiler.is_file(), f'no host compiler at {compiler}: set MACA_PATH (or CXX)'
     headers = sorted((ROOT / 'include' / 'deep_jit' / 'backend' / 'maca').glob('*.hpp'))
     assert len(headers) == 5, f'expected five MACA backend headers, found {[h.name for h in headers]}'
     for header in headers:
         source = temporary_dir / f'self_containment_{header.stem}.cpp'
         source.write_text(f'#include <deep_jit/backend/maca/{header.name}>\n')
+        object_path = temporary_dir / f'self_containment_{header.stem}.o'
         result = subprocess.run(
-            header_self_containment_command(source),
+            header_self_containment_command(source, object_path),
             capture_output=True, text=True, timeout=300)
         assert result.returncode == 0, f'{header.name} is not self-contained:\n{result.stderr}'
     print(f'validated {len(headers)} self-contained MACA backend headers', flush=True)
@@ -202,25 +189,25 @@ def fmt_root():
     return Path(os.environ.get('FMT_ROOT') or ROOT.parent / 'fmt')
 
 
-def header_self_containment_command(source):
-    """The device headers need the MACA, cu-bridge, torch and fmt include roots
-    (plus the host C++20 standard library); the roots mirror `build.sh`."""
-    toolchain = host_toolchain()
-    sysroot = toolchain / 'x86_64-conda-linux-gnu' / 'sysroot'
-    gcc = gcc_tree(toolchain)
-    gcc_limits = gcc_limits_include(toolchain)
+def header_self_containment_command(source, output):
+    """The backend headers need the MACA, cu-bridge, torch and fmt include
+    roots; the roots mirror `build.sh`.
+
+    `-fsyntax-only` is not in mxcc's option table, so the check compiles to an
+    object file instead -- the question is the same one (does the header
+    compile alone), and `-Werror` keeps it as strict.
+    """
     torch_root = Path(os.environ.get('TORCH_ROOT') or Path(torch.__file__).resolve().parent)
     maca = maca_path()
 
     command = [
-        str(toolchain / 'bin/clang++-22'), '-fsyntax-only', '-std=c++20',
+        str(host_compiler()), '-c', '-o', str(output), '-std=c++20',
         '-Werror', '-Wno-attributes', '-Wno-deprecated-declarations',
         '-Wno-missing-field-initializers', '-Wno-psabi', '-Wno-unused-function',
         # Not optional: the platform's PyTorch headers gate on it (ATen's
         # Context.h has a static_assert(0) in the #else branch) and the
         # backend's kernel.hpp includes <ATen/cuda/CUDAContext.h>.
         '-DUSE_MACA', '-D_GNU_SOURCE',
-        f'--sysroot={sysroot}', f'--gcc-toolchain={toolchain}',
     ]
     for path in (
         ROOT / 'include',
@@ -228,17 +215,11 @@ def header_self_containment_command(source):
         maca / 'include', maca / 'include/mcr', maca / 'include/mcc',
         maca / 'include/mcsparse', maca / 'include/mcblas', maca / 'include/mcsolver',
         maca / 'include/misc', maca / 'include/common', maca / 'include/mctx',
-        maca / 'tools/cu-bridge/include', toolchain / 'include',
+        maca / 'tools/cu-bridge/include',
         torch_root / 'include', torch_root / 'include/torch/csrc/api/include',
         Path(sysconfig.get_paths()['include']),
     ):
         command.append('-I' + str(path))
-    for path in (
-        gcc / 'include', gcc / 'include/c++',
-        gcc / 'include/c++/x86_64-conda-linux-gnu', gcc / 'include/c++/backward',
-        sysroot / 'usr/include', gcc_limits,
-    ):
-        command.extend(['-isystem', str(path)])
     command.append(str(source))
     return command
 

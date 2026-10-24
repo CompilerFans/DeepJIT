@@ -22,17 +22,16 @@ def extra_include_paths():
     `deep_jit/utils/exception.hpp` includes `<elfutils/libdwfl.h>`, from the
     platform's libdw, and the headers format through the vendored fmt checkout
     (`FMT_ROOT`, a sibling by default) rather than `<format>`.  libdw's root is
-    not on every host's default search path -- the MACA host toolchain carries
-    it, the system default is expected to -- so it is located rather than
-    assumed, and added only when found.
+    not on every host's default search path -- a system libdw-dev carries it,
+    a MACA install may -- so it is located rather than assumed, and added only
+    when found.
     """
-    toolchain = Path(os.environ.get('MACA_TOOLCHAIN') or '/home/compiler_gfx/gpu_model/tools/hipcc')
     maca = Path(os.environ.get('MACA_PATH') or '/opt/maca')
     fmt = Path(os.environ.get('FMT_ROOT') or ROOT.parent / 'fmt') / 'include'
     assert (fmt / 'fmt/format.h').is_file(), f'no fmt checkout at {fmt.parent}: set FMT_ROOT'
 
     roots = [ROOT / 'include', fmt]
-    for candidate in (toolchain / 'include', maca / 'include'):
+    for candidate in (maca / 'include', maca / 'mxgpu_llvm' / 'include'):
         if (candidate / 'elfutils/libdwfl.h').is_file():
             roots.append(candidate)
             break

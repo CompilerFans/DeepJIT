@@ -27,9 +27,8 @@ python tests/test_maca.py          # MACA: source the MACA env first (MACA_PATH,
                                    #   must include $MACA_PATH/lib and $MACA_PATH/mxgpu_llvm/lib)
 python tests/test_exception.py     # header-only check of the exception/backtrace path
 
-# Build just the MACA harness.  With MACA_TOOLCHAIN set the host side is clang++-22 + a GCC-15
-# conda sysroot; unset, it falls back to the host g++ (11 is what mxcc itself drives).  mxcc is
-# only invoked later, at run time, by the JIT either way.
+# Build just the MACA harness with the MACA SDK's own clang driver (`mxcc`); `CXX` overrides it.
+# The SDK ships no `clang++`.  Device-side compilation is still done by mxcc later, at run time.
 bash tests/test_maca_proj/build.sh /tmp/djbuild/test_maca
 
 # CMake is for debugging / IDE indexing only. It builds a TVM FFI `_C` module and exists to
@@ -204,10 +203,12 @@ exists for packaging namespace only.
 harness registers its cases with `run_test("name", ...)` and prints `[ RUN ] / [ OK ] / [ SKIPPED ]`.
 
 - MACA has no Python embedding: `main.cpp` is a standalone host binary built by
-  `test_maca_proj/build.sh`, which needs the conda clang++-22 / GCC-15 sysroot; kernel sources live in
-  `test_maca_proj/kernels/` and hooks in `test_maca_proj/scripts/`.
+  `test_maca_proj/build.sh` with the MACA SDK's `mxcc` (its clang driver; the SDK ships no
+  `clang++`), and `tests/test_maca.py` uses the same compiler for the self-containment check;
+  kernel sources live in `test_maca_proj/kernels/` and hooks in `test_maca_proj/scripts/`.
 - The driver validates more than the harness reports: **header self-containment** (each
-  `backend/maca/*.hpp` header must compile alone with `-Werror`), the exact cache-entry shape on disk
+  `backend/maca/*.hpp` header must compile alone with `-Werror`, to an object file because
+  `-fsyntax-only` is not in mxcc's option table), the exact cache-entry shape on disk
   (`kernel.cu`, `kernel.devbin`, `meta.json`, `.committed`, allowed dumps), the `meta.json` schema,
   multi-process races onto one key, diagnostic output under each env prefix, and the crashed-writer
   path.
