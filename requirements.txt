@@ -7,4 +7,4 @@
 apache-tvm-ffi>=0.1.11,~=0.1.0
 
 # Needed by tests/test_maca.py.
-torch>=2.1.0
+torch>=2.8.0
