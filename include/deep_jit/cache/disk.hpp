@@ -55,6 +55,21 @@ public:
         std::error_code error_code;
         std::filesystem::rename(path, commit_path, error_code);
         if (error_code) {
+            // A lost race is only benign when the winner actually published its
+            // entry. Every other cause (permissions, ENOSPC, a stale uncommitted
+            // directory at the target) must surface here instead of being
+            // reported as a cache hit over a half-built entry.
+            std::error_code probe_error;
+            const bool published = std::filesystem::exists(commit_path / kCommitFileName, probe_error);
+            if (probe_error or not published) {
+                const auto detail = probe_error
+                                        ? fmt::format("{} (commit marker probe failed: {})",
+                                                      error_code.message(), probe_error.message())
+                                        : error_code.message();
+                DJ_PANIC("failed to publish cache entry {} -> {}: {}",
+                         path.string(), commit_path.string(), detail);
+            }
+
             // Another rank beat us, then clean up our dir and use the existing one
             // NOTES: avoid `std::filesystem::remove_all` here — it can segfault on
             // distributed filesystems, when concurrent processes operate
@@ -132,7 +147,11 @@ public:
         const auto entry_name = fmt::format("{}.{}", tag, digest);
         for (const auto& dir: paths) {
             const auto path = dir / "cache" / entry_name;
-            if (std::filesystem::exists(path / kCommitFileName)) {
+            std::error_code error_code;
+            const bool committed = std::filesystem::exists(path / kCommitFileName, error_code);
+            if (error_code)
+                DJ_PANIC("failed to probe cache entry {}: {}", path.string(), error_code.message());
+            if (committed) {
                 try_update_mtime(path / kCommitFileName);
                 return DiskCacheEntry{true, path};
             }

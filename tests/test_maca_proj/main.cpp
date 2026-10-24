@@ -2010,6 +2010,27 @@ void test_disk_cache(const fs::path& cache_root) {
     DJ_HOST_ASSERT(fs::is_regular_file(incomplete_secondary_path / "partial"),
                    "cache lookup modified an uncommitted secondary entry");
 
+    // A rename that fails for a reason other than losing a race must not be
+    // reported as a published entry: here the target exists but holds no commit
+    // marker, so the publish has to fail and clean up its staging directory.
+    const auto blocked_path = primary / "cache/blocked.digest";
+    deep_jit::make_dirs(blocked_path);
+    deep_jit::write_file_sync(blocked_path / "partial", "partial");
+    fs::path blocked_temporary_path;
+    {
+        auto entry = cache.entry("blocked", "digest");
+        DJ_HOST_ASSERT(not entry.hit, "an uncommitted entry at the commit path counted as a hit");
+        deep_jit::write_file_sync(entry.path / "payload", "complete");
+        blocked_temporary_path = entry.path;
+        expect_failure([&] { (void)entry.commit(); }, "failed to publish cache entry");
+        DJ_HOST_ASSERT(not entry.committed and not entry.hit,
+                       "a failed publication was reported as a committed entry");
+    }
+    DJ_HOST_ASSERT(not fs::exists(blocked_temporary_path),
+                   "a failed publication left its staging directory behind");
+    DJ_HOST_ASSERT(fs::is_regular_file(blocked_path / "partial"),
+                   "a failed publication modified the blocking directory");
+
     const auto stale_temporary_path = primary / "tmp/stale";
     deep_jit::make_dirs(stale_temporary_path / "nested");
     deep_jit::write_file_sync(stale_temporary_path / "nested/payload", "stale");
