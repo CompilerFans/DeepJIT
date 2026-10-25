@@ -985,6 +985,35 @@ void test_filesystem(const fs::path& cache_root) {
     DJ_HOST_ASSERT(not fs::exists(single_file), "safe_remove_all did not remove a single file");
     DJ_HOST_ASSERT(not deep_jit::try_update_mtime(single_file), "mtime update unexpectedly succeeded for a missing file");
     deep_jit::safe_remove_all(single_file);
+
+    // Cleanup must remove a planted symlink instead of following it. The
+    // target stands in for another cache entry (or any host path) reachable
+    // from a group-writable shared cache.
+    const auto symlink_target = cache_root / "safe_remove_all_target";
+    deep_jit::make_dirs(symlink_target);
+    deep_jit::write_file_sync(symlink_target / "sentinel", "keep");
+    const auto symlink_root = cache_root / "safe_remove_all_symlinks";
+    deep_jit::make_dirs(symlink_root / "nested");
+    deep_jit::write_file_sync(symlink_root / "nested/file", "payload");
+    fs::create_directory_symlink(symlink_target, symlink_root / "directory_link");
+    fs::create_symlink(symlink_target / "missing", symlink_root / "dangling_link");
+    deep_jit::safe_remove_all(symlink_root);
+    DJ_HOST_ASSERT(fs::is_regular_file(symlink_target / "sentinel"),
+                   "safe_remove_all deleted contents behind a directory symlink");
+    DJ_HOST_ASSERT(not fs::exists(symlink_root),
+                   "safe_remove_all left the tree behind, normally because it followed a symlink");
+
+    // The path handed to the cleanup may itself be a symlink (for example a
+    // temporary slot replaced by another user of a shared cache): only the
+    // link may be removed.
+    const auto top_level_link = cache_root / "safe_remove_all_top_level_link";
+    fs::create_directory_symlink(symlink_target, top_level_link);
+    deep_jit::safe_remove_all(top_level_link);
+    DJ_HOST_ASSERT(fs::symlink_status(top_level_link).type() == fs::file_type::not_found,
+                   "safe_remove_all did not remove a top-level symlink");
+    DJ_HOST_ASSERT(fs::is_regular_file(symlink_target / "sentinel"),
+                   "safe_remove_all traversed a top-level symlink");
+    deep_jit::safe_remove_all(symlink_target);
 }
 
 void test_command_and_uuid() {
@@ -1943,6 +1972,25 @@ void test_disk_cache(const fs::path& cache_root) {
         deep_jit::write_file_sync(entry.path / "partial", "partial");
     }
     DJ_HOST_ASSERT(not fs::exists(abandoned_path), "uncommitted cache entry was not cleaned");
+
+    // A shared cache is group-writable, so another user can plant a symlink in
+    // an entry's staging directory. Destroying an abandoned entry must unlink
+    // it, not recurse into whatever it points at.
+    const auto cleanup_target = root / "cleanup_target";
+    deep_jit::make_dirs(cleanup_target);
+    deep_jit::write_file_sync(cleanup_target / "sentinel", "keep");
+    fs::path symlinked_temporary_path;
+    {
+        auto entry = cache.entry("symlinked_cleanup", "digest");
+        DJ_HOST_ASSERT(not entry.hit);
+        symlinked_temporary_path = entry.path;
+        fs::create_directory_symlink(cleanup_target, entry.path / "planted_link");
+    }
+    DJ_HOST_ASSERT(fs::is_regular_file(cleanup_target / "sentinel"),
+                   "cache cleanup followed a planted symlink out of the entry");
+    DJ_HOST_ASSERT(not fs::exists(symlinked_temporary_path),
+                   "an abandoned entry containing a symlink was not cleaned");
+    deep_jit::safe_remove_all(cleanup_target);
 
     fs::path committed_path;
     {
