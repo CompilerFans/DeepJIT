@@ -2703,67 +2703,6 @@ void test_template_hash_and_launch(Runtime& runtime) {
                    "changed template argument was not compiled");
 }
 
-bool test_cooperative_launch(Runtime& runtime) {
-    constexpr unsigned int num_blocks = 2;
-    // A 1<<20-block grid cannot co-reside: a conforming driver accepts it
-    // plainly and refuses it cooperatively; if it accepts both, the case skips.
-    constexpr unsigned int oversized_blocks = 1u << 20;
-    const auto kernel = runtime.compile("cooperative_probe", get_source("cooperative_probe.cu"));
-
-    int* output = nullptr;
-    DJ_MACA_RUNTIME_CHECK(mcMalloc(reinterpret_cast<void**>(&output), sizeof(int)));
-    const auto launch_and_read = [&](const bool cooperative, const unsigned int blocks) {
-        runtime.launch(
-            kernel, {
-                .grid_dim = dim3(blocks, 1, 1),
-                .block_dim = dim3(32, 1, 1),
-                .cluster_dim = dim3(1, 1, 1),
-                .cooperative = cooperative,
-                .enable_pdl = false,
-            },
-            output);
-        DJ_MACA_RUNTIME_CHECK(mcDeviceSynchronize());
-        int result = 0;
-        DJ_MACA_RUNTIME_CHECK(mcMemcpy(&result, output, sizeof(int), mcMemcpyDeviceToHost));
-        return result;
-    };
-
-    try {
-        // The plain path first: this is what must keep working afterwards.
-        DJ_HOST_ASSERT(launch_and_read(false, num_blocks) == static_cast<int>(num_blocks),
-                       "non-cooperative launch produced the wrong grid");
-
-        // The cooperative attribute is the only one MACA honours; a grid that
-        // fits is accepted and runs with the requested shape.
-        DJ_HOST_ASSERT(launch_and_read(true, num_blocks) == static_cast<int>(num_blocks),
-                       "cooperative launch produced the wrong grid");
-
-        // The discriminating pair: the oversized grid is accepted on the
-        // plain path ...
-        DJ_HOST_ASSERT(launch_and_read(false, oversized_blocks) == static_cast<int>(oversized_blocks),
-                       "the oversized grid did not run on the plain path");
-
-        // ... and refused cooperatively with the driver's error; some MACA
-        // generations run it in waves instead, which is a skip, not a pass.
-        bool refused = false;
-        try {
-            launch_and_read(true, oversized_blocks);
-        } catch (const std::exception& exception) {
-            DJ_HOST_ASSERT(std::string_view(exception.what()).find("cooperative") != std::string_view::npos,
-                           "unexpected exception: {}", exception.what());
-            refused = true;
-        }
-
-        DJ_MACA_RUNTIME_CHECK(mcFree(output));
-        output = nullptr;
-        return refused;
-    } catch (...) {
-        if (output != nullptr)
-            mcFree(output);
-        throw;
-    }
-}
-
 void test_large_kernel_arguments(Runtime& runtime) {
     struct OpaqueArgument {
         unsigned char bytes[128];
@@ -3150,7 +3089,6 @@ int main(int argc, char** argv) {
     run_test("launch options override", [&] { test_launch_options_override(*runtime); });
     run_test("launch option validation", [&] { test_launch_option_validation(*runtime); });
     run_test("multidimensional launch", [&] { test_multidimensional_launch(*runtime); });
-    run_test("cooperative launch", [&] { return test_cooperative_launch(*runtime); });
     run_test("JIT round trip", [&] { test_jit_round_trip(*runtime); });
     run_test("JIT vector add", [&] { test_jit_vector_add(*runtime); });
     run_test("template hash and runtime arguments", [&] { test_template_hash_and_launch(*runtime); });

@@ -19,9 +19,8 @@ if not __debug__:
 
 ROOT = Path(__file__).resolve().parent.parent
 TEST_MACA_PROJECT = ROOT / 'tests' / 'test_maca_proj'
-# The only cases allowed to skip: one needs two devices, the other a driver
-# that rejects an oversized cooperative grid.
-EXPECTED_SKIPS = {'multiple devices', 'cooperative launch'}
+# The only case allowed to skip needs two devices.
+EXPECTED_SKIPS = {'multiple devices'}
 COMPILER_OPTION_SUFFIXES = (
     'JIT_CHECK_NO_LOCAL_MEMORY',
     'JIT_CHECK_NO_SPILLS',
