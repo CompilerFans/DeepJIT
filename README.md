@@ -26,7 +26,7 @@ DeepJIT handles the JIT infrastructure so that kernel libraries can focus on the
 | --- | --- | --- |
 | **MACA** | mxcc compiles MACA source to a pre-linked device binary; `libmcruntime` loads and launches kernels. | An MXMACA install providing `mxgpu_llvm/bin/mxcc` 1.0+ and `mxgpu_llvm/bin/llvm-nm` (via `MACA_PATH`, or `/opt/maca`), plus the MACA headers. |
 
-The host environment must provide Linux, a C++20 compiler, [fmt][fmt] (header-only), and the [elfutils][elfutils] development headers providing `<elfutils/libdwfl.h>` (`libdw-dev` on Debian/Ubuntu, `elfutils-devel` on RHEL/Fedora). `libdw` is loaded at run time with `dlopen`; only its headers are needed at build time, and consumers on older glibc should additionally link `-ldl`.
+The host environment must provide Linux, a C++20 compiler, and the [elfutils][elfutils] development headers providing `<elfutils/libdwfl.h>` (`libdw-dev` on Debian/Ubuntu, `elfutils-devel` on RHEL/Fedora). `libdw` is loaded at run time with `dlopen`; only its headers are needed at build time, and consumers on older glibc should additionally link `-ldl`. [fmt][fmt] is header-only and vendored at [`third-party/fmt`](third-party/fmt) (12.1.0, MIT); add `third-party/fmt/include` to the include path, or point `DEEP_JIT_FMT_ROOT`/`FMT_ROOT` elsewhere to use another fmt checkout.
 
 The optional `python_api.hpp` binding header also requires [TVM FFI][tvm-ffi]. The exception/backtrace harness (`tests/test_exception.py`) additionally needs PyTorch and TVM FFI, both declared in [`requirements.txt`](requirements.txt) (`pip install -r requirements.txt`); the MACA harness (`tests/test_maca.py`) needs neither. DeepJIT is intended to be embedded into your extension as a header-only dependency.
 
@@ -86,10 +86,12 @@ The root `CMakeLists.txt` is for debugging and IDE indexing. Integrate the heade
 
 The DeepJIT runtime headers do not touch Python or the GIL. GIL release belongs to the binding layer: TVM FFI releases the GIL around every Python-to-C++ call by default. Consumers using another binding must manage the GIL themselves around `compile()`, `load()`, and `launch()`.
 
-Add `DeepJIT/include` to the include path of the host target, then include the MACA backend entry header:
+Add `DeepJIT/include` and the bundled `DeepJIT/third-party/fmt/include` to the include path of the host target, then include the MACA backend entry header:
 
 ```cmake
-target_include_directories(my_target PRIVATE third-party/deep_jit/include)
+target_include_directories(my_target PRIVATE
+    third-party/deep_jit/include
+    third-party/deep_jit/third-party/fmt/include)
 ```
 
 ```cpp

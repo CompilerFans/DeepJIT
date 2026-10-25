@@ -6,14 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 DeepJIT is a **header-only C++20 JIT runtime** for MACA GPUs. It compiles kernel source at runtime
 with mxcc, caches the artifact in memory and on disk, loads it, and launches it. Consumer libraries
-embed it by adding `include/` to their include path — there is no library to link (fmt is
-header-only too); only the optional `python_api.hpp` needs TVM FFI.
+embed it by adding `include/` and `third-party/fmt/include` to their include path — there is no
+library to link (fmt is header-only too); only the optional `python_api.hpp` needs TVM FFI.
 
-This checkout is consumed as the `third-party/DeepJIT` git submodule of DeepSelect (a MACA top-K
-kernel library); DeepJIT is its own repository, with `main` as the branch, and commits made here
-need the consuming repository's submodule pointer bumped separately. fmt is the sibling directory
-`third-party/fmt` in the consuming checkout — a plain vendored source tree (12.1.0, not a
-submodule) — and is what `FMT_ROOT`/`DEEP_JIT_FMT_ROOT` default to.
+This checkout is consumed as the `tools/jit_probe/third-party/DeepJIT` git submodule of DeepSelect
+(a MACA top-K kernel library); DeepJIT is its own repository, with `main` as the branch, and commits
+made here need the consuming repository's submodule pointer bumped separately. fmt is vendored
+inside this repository at `third-party/fmt` — a plain source tree (12.1.0, MIT, not a submodule) —
+and is what `FMT_ROOT`/`DEEP_JIT_FMT_ROOT` default to.
 
 `README.md` is the authoritative API reference: options, cache-key composition, toolchain
 requirements, and the full environment-variable table. Read the relevant section before changing
@@ -178,7 +178,8 @@ exists for packaging namespace only.
 - **Format through fmt, never `std::format`, in `include/deep_jit/**`.** `<format>` predates some host
   toolchains DeepJIT gets embedded into (mxcc drives a GCC 11 libstdc++), and a header-only library's
   stdlib floor becomes its consumer's. `utils/format.hpp` defines `FMT_HEADER_ONLY` and pulls
-  `<fmt/format.h>`; the consumer supplies the include path. The test harnesses under `tests/` format
+  `<fmt/format.h>`; the library is vendored at `third-party/fmt` and the consumer adds its
+  `include/` to the include path. The test harnesses under `tests/` format
   through fmt as well (they go through `deep_jit/utils/format.hpp`), so the whole tree builds with
   the host toolchain's C++20 — including the GCC 11 behind `mxcc`. The two libraries are not
   interchangeable for `{:a}`: fmt prints printf's `0x` prefix, while `std::format` follows

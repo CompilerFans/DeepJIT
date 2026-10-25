@@ -8,7 +8,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 OUT="${1:-/tmp/djbuild/test_maca}"
 
 MACA_PATH="${MACA_PATH:-/opt/maca}"
-FMT_ROOT="${FMT_ROOT:-$ROOT/../fmt}"
+FMT_ROOT="${FMT_ROOT:-$ROOT/third-party/fmt}"
 
 # The MACA SDK ships no separate `clang++`: `mxcc` is the clang driver it does
 # ship, and it compiles host C++ as readily as device code.  `CXX` overrides it.
@@ -17,7 +17,7 @@ CXX="${CXX:-$MACA_PATH/mxgpu_llvm/bin/mxcc}"
 for required in "$FMT_ROOT/include/fmt/format.h" "$MACA_PATH/include" "$CXX"; do
     if [[ ! -e "$required" ]]; then
         echo "build.sh: not found: $required" >&2
-        echo "build.sh: set MACA_PATH/FMT_ROOT to the MACA install and the fmt checkout," >&2
+        echo "build.sh: set MACA_PATH to the MACA install and FMT_ROOT to the fmt tree," >&2
         echo "build.sh: and CXX to a host C++20 compiler" >&2
         exit 1
     fi

@@ -20,8 +20,8 @@ set(DEEP_JIT_TOOLKIT_LIBRARY_DIRS "${MACA_PATH}/lib")
 set(DEEP_JIT_TOOLKIT_LIBRARIES mcruntime)
 
 # fmt is header-only: `<format>` is unavailable on some host toolchains behind
-# mxcc. Defaults to a sibling checkout; see utils/format.hpp.
-set(DEEP_JIT_FMT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../fmt" CACHE PATH "Root of an fmt checkout")
+# mxcc. Vendored at third-party/fmt; see utils/format.hpp.
+set(DEEP_JIT_FMT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third-party/fmt" CACHE PATH "Root of an fmt checkout")
 
 # exception.hpp includes <elfutils/libdwfl.h>; libdw itself is dlopen'd at run
 # time, so only the headers are needed here.

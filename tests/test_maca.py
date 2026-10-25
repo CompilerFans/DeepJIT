@@ -166,7 +166,7 @@ def validate_header_self_containment(temporary_dir):
 
 def fmt_root():
     """Root of the fmt checkout used by the headers; `FMT_ROOT` overrides it."""
-    return Path(os.environ.get('FMT_ROOT') or ROOT.parent / 'fmt')
+    return Path(os.environ.get('FMT_ROOT') or ROOT / 'third-party' / 'fmt')
 
 
 def header_self_containment_command(source, output):

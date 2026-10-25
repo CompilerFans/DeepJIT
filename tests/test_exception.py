@@ -18,10 +18,10 @@ def tvm_ffi_paths():
 
 
 def extra_include_paths():
-    """Include roots needed beyond this repository: fmt, and libdw if the
-    MACA install provides it (`exception.hpp` includes `<elfutils/libdwfl.h>`)."""
+    """Include roots needed beyond `include/`: the vendored fmt, and libdw if
+    the MACA install provides it (`exception.hpp` includes `<elfutils/libdwfl.h>`)."""
     maca = Path(os.environ.get('MACA_PATH') or '/opt/maca')
-    fmt = Path(os.environ.get('FMT_ROOT') or ROOT.parent / 'fmt') / 'include'
+    fmt = Path(os.environ.get('FMT_ROOT') or ROOT / 'third-party' / 'fmt') / 'include'
     assert (fmt / 'fmt/format.h').is_file(), f'no fmt checkout at {fmt.parent}: set FMT_ROOT'
 
     roots = [ROOT / 'include', fmt]
